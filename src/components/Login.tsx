@@ -16,8 +16,11 @@ export default function Login({ onLogin }: LoginProps) {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
 
+  // === AQUÍ ESTÁ LA LÓGICA MODIFICADA ===
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    // 🚨 LA PRUEBA INFALIBLE:
+    alert("¡Hola! El botón fue presionado. Modo: " + (isRegistering ? "Registro" : "Login"));
     setLoading(true);
     setError('');
 
@@ -26,24 +29,35 @@ export default function Login({ onLogin }: LoginProps) {
       ? { name, email, password, role, matricula: role === 'student' ? matricula : undefined }
       : { email, password };
 
+    // 🕵️ MICRÓFONOS ACTIVADOS PARA LA CONSOLA DEL NAVEGADOR
+    console.log("=== ENVIANDO PETICIÓN ===");
+    console.log("MODO:", isRegistering ? "🟢 REGISTRO" : "🔵 LOGIN");
+    console.log("RUTA DE DESTINO:", endpoint);
+    console.log("DATOS:", body);
+
     try {
       const res = await fetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
       });
+      
       const data = await res.json();
+      console.log("RESPUESTA DEL SERVIDOR:", data);
+
       if (data.success) {
         onLogin(data.user);
       } else {
         setError(data.message || 'Error en la autenticación');
       }
     } catch (err) {
-      setError('Ocurrió un error inesperado');
+      console.error("Error de conexión:", err);
+      setError('Ocurrió un error inesperado al conectar con el servidor.');
     } finally {
       setLoading(false);
     }
   };
+  // === FIN DE LA LÓGICA MODIFICADA ===
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-slate-50 relative overflow-hidden">
@@ -178,6 +192,7 @@ export default function Login({ onLogin }: LoginProps) {
 
         <div className="mt-6 text-center">
           <button
+            type="button"
             onClick={() => {
               setIsRegistering(!isRegistering);
               setError('');

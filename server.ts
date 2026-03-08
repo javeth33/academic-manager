@@ -34,32 +34,6 @@ async function startServer() {
     }
   });
 
-  // Registro
-  app.post("/api/register", async (req, res) => {
-    const { name, email, password, role, matricula } = req.body;
-
-    if (!name || !email || !password || !role) {
-      return res.status(400).json({ success: false, message: "Faltan campos obligatorios" });
-    }
-
-    const { data: user, error } = await supabase
-      .from('usuarios')
-      .insert([{ nombre: name, correo: email, contrasena: password, rol: role, matricula: matricula || null }])
-      .select()
-      .single();
-
-    if (error) {
-      if (error.code === '23505') { // 23505 es el código de Postgres para "Elemento duplicado"
-        return res.status(400).json({ success: false, message: "El correo ya está registrado" });
-      }
-      return res.status(500).json({ success: false, message: error.message });
-    }
-
-    res.json({ 
-      success: true, 
-      user: { id: user.id, name: user.nombre, email: user.correo, role: user.rol, matricula: user.matricula } 
-    });
-  });
 
   // --- RUTAS DEL ADMINISTRADOR ---
 
@@ -87,24 +61,99 @@ async function startServer() {
     res.json({ success: true });
   });
 
-  // Subir materias masivamente (Bulk)
+// --- RUTA MODIFICADA: Registro (Asignación retroactiva) ---
+  app.post("/api/register", async (req, res) => {
+    // 🎤 MICRÓFONO 1: Apenas entra la petición
+    console.log("🚨 [BACKEND] Petición de registro recibida:", req.body);
+
+    const { name, email, password, role, matricula } = req.body;
+
+    if (!name || !email || !password || !role) {
+      console.log("❌ [BACKEND] Faltan campos obligatorios");
+      return res.status(400).json({ success: false, message: "Faltan campos obligatorios" });
+    }
+
+    // Insertamos el usuario
+    const { data: user, error } = await supabase
+      .from('usuarios')
+      .insert([{ nombre: name, correo: email, contrasena: password, rol: role, matricula: matricula || null }])
+      .select()
+      .single();
+
+    if (error) {
+      // 🎤 MICRÓFONO 2: Si Supabase rechaza al usuario (ej. correo repetido)
+      console.log("❌ [BACKEND] Error de Supabase al crear usuario:", error);
+      if (error.code === '23505') return res.status(400).json({ success: false, message: "El correo ya está registrado" });
+      return res.status(500).json({ success: false, message: error.message });
+    }
+
+    console.log(`✅ [BACKEND] Usuario creado en Supabase con éxito: ${user.nombre}`);
+
+    // 🌟 MAGIA RETROACTIVA
+    if (role === 'professor' && user) {
+      console.log(`🕵️ Buscando materias perdidas para: "${name.trim()}"`);
+      
+      const { data: materiasPendientes, error: errBusqueda } = await supabase
+        .from('materias')
+        .select('id, profesor_temp')
+        .ilike('profesor_temp', `%${name.trim()}%`); 
+
+      console.log(`📦 Resultados de la búsqueda:`, materiasPendientes);
+
+      if (materiasPendientes && materiasPendientes.length > 0) {
+        const ids = materiasPendientes.map(m => m.id);
+        const { error: errUpdate } = await supabase
+          .from('materias')
+          .update({ profesor_id: user.id, profesor_temp: null })
+          .in('id', ids);
+          
+        if (errUpdate) console.log(`❌ Error al actualizar materias:`, errUpdate);
+        else console.log(`🎉 ¡Materias asignadas con éxito a ${name}!`);
+      } else {
+        console.log(`⚠️ No se encontraron materias pendientes con ese nombre.`);
+      }
+    } else {
+      console.log(`⚠️ No se ejecutó la búsqueda. Rol: "${role}"`);
+    }
+
+    res.json({ 
+      success: true, 
+      user: { id: user.id, name: user.nombre, email: user.correo, role: user.rol } 
+    });
+  });
+
+  // --- RUTA MODIFICADA: Subir materias masivamente (Admin) ---
   app.post("/api/admin/subjects/bulk", async (req, res) => {
     const { subjects } = req.body; 
     
     try {
+      // 1. Obtenemos a todos los profesores actuales de golpe para no saturar la BD
+      const { data: profesores } = await supabase
+        .from('usuarios')
+        .select('id, nombre')
+        .eq('rol', 'professor');
+
       for (const sub of subjects) {
-        const { data: prof } = await supabase
-          .from('usuarios')
-          .select('id')
-          .eq('correo', sub.professorEmail)
-          .eq('rol', 'professor')
-          .single();
+        const nombreExcel = sub.professorName.trim();
+        
+        // 2. Buscamos si el profe del Excel ya existe en nuestro sistema (ignorando mayúsculas)
+        const profExistente = profesores?.find(
+          p => p.nombre.toLowerCase() === nombreExcel.toLowerCase()
+        );
           
+        // 3. Insertamos la materia
         await supabase
           .from('materias')
-          .insert([{ nrc: sub.nrc, nombre: sub.name, horario: sub.schedule, salon: sub.classroom, profesor_id: prof ? prof.id : null }]);
+          .insert([{ 
+            nrc: sub.nrc, 
+            nombre: sub.name, 
+            horario: sub.schedule, 
+            salon: sub.classroom, 
+            profesor_id: profExistente ? profExistente.id : null,
+            profesor_temp: profExistente ? null : nombreExcel // <- ¡ESTA ES LA LÍNEA CLAVE!
+          }]);
       }
-      res.json({ success: true });
+      res.json({ success: true, message: "Materias procesadas correctamente" });
     } catch (error: any) {
       res.status(500).json({ success: false, message: "Error al procesar lote de materias" });
     }
