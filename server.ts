@@ -37,30 +37,33 @@ async function startServer() {
 
   // --- RUTAS DEL ADMINISTRADOR ---
 
-  // Crear materia manualmente
+// Crear materia manualmente
   app.post("/api/admin/subjects", async (req, res) => {
-    const { nrc, name, schedule, classroom, professorEmail } = req.body;
+    const { nrc, name, schedule, classroom, professorName } = req.body;
     
-    // Buscar al profesor
+    // 1. Buscamos si el profesor ya existe en el sistema por su nombre
     const { data: professor } = await supabase
       .from('usuarios')
       .select('id')
-      .eq('correo', professorEmail)
+      .ilike('nombre', professorName.trim())
       .eq('rol', 'professor')
       .single();
       
-    if (!professor) {
-      return res.status(400).json({ success: false, message: "Profesor no encontrado" });
-    }
-
+    // 2. Insertamos la materia haciendo la misma validación que en la subida masiva
     const { error } = await supabase
       .from('materias')
-      .insert([{ nrc, nombre: name, horario: schedule, salon: classroom, profesor_id: professor.id }]);
+      .insert([{ 
+        nrc, 
+        nombre: name, 
+        horario: schedule, 
+        salon: classroom, 
+        profesor_id: professor ? professor.id : null,
+        profesor_temp: professor ? null : professorName.trim()
+      }]);
 
     if (error) return res.status(500).json({ success: false, message: error.message });
     res.json({ success: true });
   });
-
 // --- RUTA MODIFICADA: Registro (Asignación retroactiva) ---
   app.post("/api/register", async (req, res) => {
     // 🎤 MICRÓFONO 1: Apenas entra la petición

@@ -16,11 +16,8 @@ export default function Login({ onLogin }: LoginProps) {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
 
-  // === AQUÍ ESTÁ LA LÓGICA MODIFICADA ===
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    // 🚨 LA PRUEBA INFALIBLE:
-    alert("¡Hola! El botón fue presionado. Modo: " + (isRegistering ? "Registro" : "Login"));
     setLoading(true);
     setError('');
 
@@ -28,12 +25,6 @@ export default function Login({ onLogin }: LoginProps) {
     const body = isRegistering 
       ? { name, email, password, role, matricula: role === 'student' ? matricula : undefined }
       : { email, password };
-
-    // 🕵️ MICRÓFONOS ACTIVADOS PARA LA CONSOLA DEL NAVEGADOR
-    console.log("=== ENVIANDO PETICIÓN ===");
-    console.log("MODO:", isRegistering ? "🟢 REGISTRO" : "🔵 LOGIN");
-    console.log("RUTA DE DESTINO:", endpoint);
-    console.log("DATOS:", body);
 
     try {
       const res = await fetch(endpoint, {
@@ -43,7 +34,6 @@ export default function Login({ onLogin }: LoginProps) {
       });
       
       const data = await res.json();
-      console.log("RESPUESTA DEL SERVIDOR:", data);
 
       if (data.success) {
         onLogin(data.user);
@@ -57,7 +47,6 @@ export default function Login({ onLogin }: LoginProps) {
       setLoading(false);
     }
   };
-  // === FIN DE LA LÓGICA MODIFICADA ===
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-slate-50 relative overflow-hidden">

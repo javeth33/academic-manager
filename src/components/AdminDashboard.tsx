@@ -1,11 +1,21 @@
 import React, { useState } from 'react';
-import { Upload, CheckCircle, AlertCircle, BookOpen, Users } from 'lucide-react';
+import { Upload, CheckCircle, AlertCircle, BookOpen, PlusCircle } from 'lucide-react';
 
 export default function AdminDashboard() {
   const [isUploading, setIsUploading] = useState(false);
   const [message, setMessage] = useState<{ text: string; type: 'success' | 'error' | '' }>({ text: '', type: '' });
 
-  // Función principal que lee el archivo y lo envía al backend
+  // --- ESTADOS PARA EL REGISTRO MANUAL ---
+  const [manualSubject, setManualSubject] = useState({
+    nrc: '',
+    name: '',
+    schedule: '',
+    classroom: '',
+    professorName: '' // Cambiado: Ahora pedimos el nombre exacto
+  });
+  const [isSubmittingManual, setIsSubmittingManual] = useState(false);
+  const [manualMessage, setManualMessage] = useState<{ text: string; type: 'success' | 'error' | '' }>({ text: '', type: '' });
+
   const handleFileUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
@@ -18,28 +28,20 @@ export default function AdminDashboard() {
     reader.onload = async (e) => {
       try {
         const text = e.target?.result as string;
-        
-        // 1. Separamos por líneas y limpiamos caracteres extraños (como retornos de carro de Windows)
         const lines = text.split('\n').map(line => line.replace('\r', '')).filter(line => line.trim() !== '');
         
-        // 2. Saltamos la línea 0 (los encabezados) y mapeamos el resto
-        // Columnas esperadas: NRC(0), Clave(1), Materia(2), Secc(3), Días(4), Hora(5), Profesor(6), Salón(7)
         const subjects = lines.slice(1).map(line => {
           const columns = line.split(','); 
-          console.log("Fila de Excel:", columns);
           
           return {
             nrc: columns[0]?.trim() || '',
-            // Ignoramos Clave(1) y Secc(3) porque no están en nuestra base de datos
             name: columns[2]?.trim() || 'Sin Nombre',
-            // Juntamos Días y Hora
             schedule: `${columns[4]?.trim() || ''} ${columns[5]?.trim() || ''}`.trim(),
             professorName: columns[6]?.trim() || '',
             classroom: columns[7]?.trim() || ''
           };
         });
 
-        // 3. Enviamos los datos al servidor (a la ruta que modificamos en server.ts)
         const response = await fetch('/api/admin/subjects/bulk', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -54,11 +56,9 @@ export default function AdminDashboard() {
           setMessage({ text: data.message || 'Hubo un problema al subir las materias.', type: 'error' });
         }
       } catch (error) {
-        console.error("Error procesando el archivo:", error);
         setMessage({ text: 'Error al leer el archivo. Verifica que sea un CSV válido y separado por comas.', type: 'error' });
       } finally {
         setIsUploading(false);
-        // Reseteamos el input para que permita subir el mismo archivo si hubo un error y se corrigió
         event.target.value = '';
       }
     };
@@ -68,8 +68,34 @@ export default function AdminDashboard() {
       setIsUploading(false);
     };
 
-    // Iniciamos la lectura como texto
     reader.readAsText(file);
+  };
+
+  const handleManualSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setIsSubmittingManual(true);
+    setManualMessage({ text: '', type: '' });
+
+    try {
+      const response = await fetch('/api/admin/subjects', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(manualSubject)
+      });
+
+      const data = await response.json();
+
+      if (data.success) {
+        setManualMessage({ text: '¡Materia registrada exitosamente!', type: 'success' });
+        setManualSubject({ nrc: '', name: '', schedule: '', classroom: '', professorName: '' });
+      } else {
+        setManualMessage({ text: data.message || 'Error al registrar la materia.', type: 'error' });
+      }
+    } catch (error) {
+      setManualMessage({ text: 'Error de conexión con el servidor.', type: 'error' });
+    } finally {
+      setIsSubmittingManual(false);
+    }
   };
 
   return (
@@ -80,7 +106,6 @@ export default function AdminDashboard() {
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        {/* Tarjeta de subida de CSV */}
         <div className="bg-white p-6 rounded-xl shadow-sm border border-blue-100">
           <div className="flex items-center gap-3 mb-4">
             <div className="p-2 bg-blue-100 rounded-lg text-blue-600">
@@ -117,7 +142,6 @@ export default function AdminDashboard() {
             </div>
           </div>
 
-          {/* Mensajes de feedback */}
           {message.text && (
             <div className={`mt-4 p-4 rounded-lg flex items-start gap-3 ${
               message.type === 'success' ? 'bg-green-50 text-green-800 border border-green-200' : 
@@ -131,19 +155,109 @@ export default function AdminDashboard() {
           )}
         </div>
 
-        {/* Tarjeta de Estadísticas / Info (Opcional, para que el panel se vea profesional) */}
         <div className="space-y-6">
-          <div className="bg-gradient-to-br from-blue-600 to-blue-800 p-6 rounded-xl shadow-md text-white">
+          <div className="bg-gradient-to-br from-blue-600 to-blue-800 p-6 rounded-xl shadow-md text-white h-full">
             <div className="flex items-center gap-3 mb-2">
               <BookOpen size={24} className="text-blue-200" />
               <h2 className="text-xl font-semibold">¿Cómo funciona la asignación?</h2>
             </div>
-            <p className="text-blue-100 text-sm leading-relaxed">
-              El sistema comparará automáticamente el nombre del profesor en el archivo con los usuarios registrados. 
-              Si el profesor aún no tiene cuenta, el sistema guardará su materia "en espera" y se la asignará automáticamente en cuanto se registre.
+            <p className="text-blue-100 text-sm leading-relaxed mb-4">
+              <strong>Asignación Automática:</strong> El sistema comparará el nombre del profesor con los usuarios registrados. Si el profesor aún no tiene cuenta, el sistema guardará su materia "en espera" y se la asignará automáticamente en cuanto se registre.
             </p>
           </div>
         </div>
+      </div>
+
+      <div className="mt-8 bg-white p-6 rounded-xl shadow-sm border border-blue-100">
+        <div className="flex items-center gap-3 mb-6">
+          <div className="p-2 bg-blue-100 rounded-lg text-blue-600">
+            <PlusCircle size={24} />
+          </div>
+          <h2 className="text-xl font-semibold text-slate-800">Registro Manual de Materia</h2>
+        </div>
+
+        <form onSubmit={handleManualSubmit} className="space-y-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+            <div>
+              <label className="block text-sm font-medium text-slate-700 mb-1">NRC</label>
+              <input
+                type="text"
+                required
+                value={manualSubject.nrc}
+                onChange={(e) => setManualSubject({ ...manualSubject, nrc: e.target.value })}
+                className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                placeholder="Ej. 12345"
+              />
+            </div>
+            <div className="lg:col-span-2">
+              <label className="block text-sm font-medium text-slate-700 mb-1">Nombre de la Materia</label>
+              <input
+                type="text"
+                required
+                value={manualSubject.name}
+                onChange={(e) => setManualSubject({ ...manualSubject, name: e.target.value })}
+                className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                placeholder="Ej. Modelos de Desarrollo Web"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-slate-700 mb-1">Salón</label>
+              <input
+                type="text"
+                required
+                value={manualSubject.classroom}
+                onChange={(e) => setManualSubject({ ...manualSubject, classroom: e.target.value })}
+                className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                placeholder="Ej. CCO1 102"
+              />
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+              <label className="block text-sm font-medium text-slate-700 mb-1">Horario y Días</label>
+              <input
+                type="text"
+                required
+                value={manualSubject.schedule}
+                onChange={(e) => setManualSubject({ ...manualSubject, schedule: e.target.value })}
+                className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                placeholder="Ej. L M J 10:00 - 11:59"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-slate-700 mb-1">Nombre del Profesor (En espera)</label>
+              <input
+                type="text"
+                required
+                value={manualSubject.professorName}
+                onChange={(e) => setManualSubject({ ...manualSubject, professorName: e.target.value })}
+                className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                placeholder="Ej. ZENTENO VAZQUEZ ANA CLAUDIA"
+              />
+            </div>
+          </div>
+
+          <div className="flex items-center justify-between pt-2">
+            <div className="flex-1 mr-4">
+              {manualMessage.text && (
+                <div className={`p-3 rounded-lg flex items-center gap-2 ${
+                  manualMessage.type === 'success' ? 'bg-green-50 text-green-800' : 'bg-red-50 text-red-800'
+                }`}>
+                  {manualMessage.type === 'success' ? <CheckCircle size={18} /> : <AlertCircle size={18} />}
+                  <p className="text-sm font-medium">{manualMessage.text}</p>
+                </div>
+              )}
+            </div>
+            <button
+              type="submit"
+              disabled={isSubmittingManual}
+              className="bg-blue-600 text-white font-medium py-2 px-6 rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-70 flex-shrink-0"
+            >
+              {isSubmittingManual ? 'Guardando...' : 'Registrar Materia'}
+            </button>
+          </div>
+        </form>
       </div>
     </div>
   );
