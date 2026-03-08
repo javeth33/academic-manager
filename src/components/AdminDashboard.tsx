@@ -11,7 +11,7 @@ export default function AdminDashboard() {
     name: '',
     schedule: '',
     classroom: '',
-    professorName: '' // Cambiado: Ahora pedimos el nombre exacto
+    professorName: '' 
   });
   const [isSubmittingManual, setIsSubmittingManual] = useState(false);
   const [manualMessage, setManualMessage] = useState<{ text: string; type: 'success' | 'error' | '' }>({ text: '', type: '' });
@@ -21,7 +21,7 @@ export default function AdminDashboard() {
     if (!file) return;
 
     setIsUploading(true);
-    setMessage({ text: 'Procesando archivo CSV...', type: '' });
+    setMessage({ text: 'Procesando y agrupando archivo CSV...', type: '' });
 
     const reader = new FileReader();
 
@@ -30,17 +30,46 @@ export default function AdminDashboard() {
         const text = e.target?.result as string;
         const lines = text.split('\n').map(line => line.replace('\r', '')).filter(line => line.trim() !== '');
         
-        const subjects = lines.slice(1).map(line => {
+        // 🌟 NUEVA LÓGICA DE AGRUPACIÓN POR NRC
+        const subjectsMap = new Map();
+
+        lines.slice(1).forEach(line => {
           const columns = line.split(','); 
+          const nrc = columns[0]?.trim();
           
-          return {
-            nrc: columns[0]?.trim() || '',
-            name: columns[2]?.trim() || 'Sin Nombre',
-            schedule: `${columns[4]?.trim() || ''} ${columns[5]?.trim() || ''}`.trim(),
-            professorName: columns[6]?.trim() || '',
-            classroom: columns[7]?.trim() || ''
-          };
+          if (!nrc) return; // Saltamos líneas vacías
+
+          const name = columns[2]?.trim() || 'Sin Nombre';
+          const scheduleStr = `${columns[4]?.trim() || ''} ${columns[5]?.trim() || ''}`.trim();
+          const professorName = columns[6]?.trim() || '';
+          const classroom = columns[7]?.trim() || '';
+
+          if (subjectsMap.has(nrc)) {
+            // Si el NRC ya existe, concatenamos los nuevos horarios y salones
+            const existingSubject = subjectsMap.get(nrc);
+            
+            if (scheduleStr) {
+              existingSubject.schedule += ` / ${scheduleStr}`;
+            }
+            // Agregamos el salón solo si es diferente para no repetir "Salón 102 / Salón 102"
+            if (classroom && !existingSubject.classroom.includes(classroom)) {
+              existingSubject.classroom += ` / ${classroom}`;
+            }
+          } else {
+            // Si es la primera vez que vemos este NRC, lo guardamos
+            subjectsMap.set(nrc, {
+              nrc,
+              name,
+              schedule: scheduleStr,
+              professorName,
+              classroom
+            });
+          }
         });
+
+        // Convertimos el mapa de nuevo a un arreglo para enviarlo al servidor
+        const subjects = Array.from(subjectsMap.values());
+        console.log("Materias agrupadas listas para enviar:", subjects);
 
         const response = await fetch('/api/admin/subjects/bulk', {
           method: 'POST',
@@ -51,7 +80,7 @@ export default function AdminDashboard() {
         const data = await response.json();
 
         if (data.success) {
-          setMessage({ text: '¡Materias procesadas y asignadas con éxito!', type: 'success' });
+          setMessage({ text: `¡Se procesaron y asignaron ${subjects.length} materias únicas con éxito!`, type: 'success' });
         } else {
           setMessage({ text: data.message || 'Hubo un problema al subir las materias.', type: 'error' });
         }
@@ -162,6 +191,9 @@ export default function AdminDashboard() {
               <h2 className="text-xl font-semibold">¿Cómo funciona la asignación?</h2>
             </div>
             <p className="text-blue-100 text-sm leading-relaxed mb-4">
+              <strong>Agrupación Inteligente:</strong> El sistema detecta si una materia (NRC) tiene varios días/horarios en diferentes filas del Excel y los agrupa en un solo registro automáticamente.
+            </p>
+            <p className="text-blue-100 text-sm leading-relaxed mb-4">
               <strong>Asignación Automática:</strong> El sistema comparará el nombre del profesor con los usuarios registrados. Si el profesor aún no tiene cuenta, el sistema guardará su materia "en espera" y se la asignará automáticamente en cuanto se registre.
             </p>
           </div>
@@ -222,7 +254,7 @@ export default function AdminDashboard() {
                 value={manualSubject.schedule}
                 onChange={(e) => setManualSubject({ ...manualSubject, schedule: e.target.value })}
                 className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                placeholder="Ej. L M J 10:00 - 11:59"
+                placeholder="Ej. L 09:00-09:59 / M 09:00-10:59 / V 09:00-10:59"
               />
             </div>
             <div>
