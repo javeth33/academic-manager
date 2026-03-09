@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Users, Clock, Calendar, Upload, CheckSquare, ArrowLeft, MapPin } from 'lucide-react';
+import { Users, Clock, Calendar, Upload, CheckSquare, ArrowLeft, MapPin, Loader2, CheckCircle, AlertCircle } from 'lucide-react';
 import { motion } from 'motion/react';
 
 interface Subject {
@@ -52,7 +52,10 @@ export default function ProfessorDashboard({ user }: ProfessorDashboardProps) {
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
           {loading ? (
-            <p>Cargando materias...</p>
+            <div className="col-span-3 text-center py-12">
+              <Loader2 className="w-8 h-8 animate-spin text-blue-600 mx-auto" />
+              <p className="text-slate-500 mt-2">Cargando materias...</p>
+            </div>
           ) : subjects.length === 0 ? (
              <div className="col-span-3 text-center py-12 bg-white rounded-2xl border border-blue-100">
                <p className="text-slate-500">No hay materias asignadas aún.</p>
@@ -75,7 +78,6 @@ export default function ProfessorDashboard({ user }: ProfessorDashboardProps) {
                 </div>
                 <h3 className="text-xl font-bold text-slate-800 mb-4 flex-grow">{subject.name}</h3>
                 
-                {/* Visualización mejorada de Horarios en la tarjeta */}
                 <div className="space-y-3 text-sm">
                   <div>
                     <div className="flex items-center gap-2 text-slate-700 font-medium mb-1.5">
@@ -113,10 +115,19 @@ export default function ProfessorDashboard({ user }: ProfessorDashboardProps) {
 }
 
 function SubjectDetail({ subject, onBack }: { subject: Subject; onBack: () => void }) {
-  const [activeTab, setActiveTab] = useState<'attendance' | 'students'>('attendance');
   const [token, setToken] = useState<string | null>(null);
   const [expiresAt, setExpiresAt] = useState<string | null>(null);
+  
+  // --- ESTADOS DE LA CARGA MASIVA ---
   const [studentFile, setStudentFile] = useState<File | null>(null);
+  const [isUploadingList, setIsUploadingList] = useState(false);
+  const [uploadMessage, setUploadMessage] = useState<{ text: string; type: 'success' | 'error' | '' }>({ text: '', type: '' });
+
+  // --- ESTADOS DEL FORMULARIO MANUAL ---
+  const [manualStudent, setManualStudent] = useState({ matricula: '', email: '', name: '' });
+  const [isSubmittingManual, setIsSubmittingManual] = useState(false);
+  const [manualMessage, setManualMessage] = useState<{ text: string; type: 'success' | 'error' | '' }>({ text: '', type: '' });
+
   const [records, setRecords] = useState<any[]>([]);
   const [allStudents, setAllStudents] = useState<any[]>([]);
   const [sessions, setSessions] = useState<any[]>([]);
@@ -158,84 +169,104 @@ function SubjectDetail({ subject, onBack }: { subject: Subject; onBack: () => vo
     if (data.success) {
       setToken(data.token);
       setExpiresAt(data.expiresAt);
-      fetchSessions(); // Refresh sessions list
+      fetchSessions();
       setSelectedSessionId(data.sessionId);
     }
   };
 
-  const [manualStudent, setManualStudent] = useState({ matricula: '', email: '', name: '' });
-
+  // --- FUNCIÓN MEJORADA: AGREGAR MANUAL ---
   const handleManualAdd = async () => {
     if (!manualStudent.matricula || !manualStudent.email || !manualStudent.name) {
-      alert('Por favor completa todos los campos');
+      setManualMessage({ text: 'Por favor completa todos los campos', type: 'error' });
       return;
     }
 
-    const res = await fetch('/api/professor/students/bulk', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ subjectId: subject.id, students: [manualStudent] }),
-    });
+    setIsSubmittingManual(true);
+    setManualMessage({ text: '', type: '' });
 
-    const data = await res.json();
-    if (data.success) {
-      alert('Alumno agregado exitosamente');
-      setManualStudent({ matricula: '', email: '', name: '' });
-      if (selectedSessionId) fetchRecords(selectedSessionId);
-    } else {
-      alert('Error al agregar alumno: ' + data.message);
-    }
-  };
-
-const handleStudentUpload = async () => {
-    if (!studentFile) return;
-    const reader = new FileReader();
-    
-    reader.onload = async (e) => {
-      const text = e.target?.result as string;
-      const lines = text.split('\n').map(line => line.replace('\r', '')).filter(line => line.trim() !== '');
-      const students = [];
-      
-      // 🌟 MAGIA: Detectar si Excel usó comas o puntos y comas
-      const separator = lines[0].includes(';') ? ';' : ',';
-      
-      for (let i = 1; i < lines.length; i++) {
-        const columns = lines[i].split(separator);
-        
-        // Columnas: Matricula(0), Nombre(1), ApPaterno(2), ApMaterno(3), Carrera(4), Semestre(5), Correo(6)
-        const matricula = columns[0]?.trim();
-        const nombre = columns[1]?.trim() || '';
-        const apPaterno = columns[2]?.trim() || '';
-        const apMaterno = columns[3]?.trim() || '';
-        const correo = columns[6]?.trim();
-
-        const fullName = `${nombre} ${apPaterno} ${apMaterno}`.trim();
-
-        if (correo) {
-          students.push({ matricula, email: correo, name: fullName });
-        }
-      }
-
-      // 🚨 Si después de buscar no encontró correos, detenemos todo y avisamos
-      if (students.length === 0) {
-        alert(`No se detectaron correos en la columna 7. Revisa tu archivo CSV. Separador detectado: "${separator}"`);
-        setStudentFile(null);
-        return;
-      }
-
+    try {
       const res = await fetch('/api/professor/students/bulk', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ subjectId: subject.id, students }),
+        body: JSON.stringify({ subjectId: subject.id, students: [manualStudent] }),
       });
-      
+
       const data = await res.json();
       if (data.success) {
-        alert(`¡${students.length} estudiantes procesados exitosamente!`);
-        setStudentFile(null);
+        setManualMessage({ text: 'Alumno agregado exitosamente', type: 'success' });
+        setManualStudent({ matricula: '', email: '', name: '' });
         if (selectedSessionId) fetchRecords(selectedSessionId);
       } else {
-        alert('Hubo un error al procesar la lista en el servidor.');
+        setManualMessage({ text: 'Error al agregar alumno: ' + data.message, type: 'error' });
+      }
+    } catch (err) {
+      setManualMessage({ text: 'Error de conexión con el servidor', type: 'error' });
+    } finally {
+      setIsSubmittingManual(false);
+      // Limpiar mensaje después de 3 segundos
+      setTimeout(() => setManualMessage({ text: '', type: '' }), 3000);
+    }
+  };
+
+  // --- FUNCIÓN MEJORADA: CARGA MASIVA ---
+  const handleStudentUpload = async () => {
+    if (!studentFile) return;
+    
+    setIsUploadingList(true);
+    setUploadMessage({ text: '', type: '' });
+
+    const reader = new FileReader();
+    
+    reader.onload = async (e) => {
+      try {
+        const text = e.target?.result as string;
+        const lines = text.split('\n').map(line => line.replace('\r', '')).filter(line => line.trim() !== '');
+        const students = [];
+        
+        const separator = lines[0].includes(';') ? ';' : ',';
+        
+        for (let i = 1; i < lines.length; i++) {
+          const columns = lines[i].split(separator);
+          
+          const matricula = columns[0]?.trim();
+          const nombre = columns[1]?.trim() || '';
+          const apPaterno = columns[2]?.trim() || '';
+          const apMaterno = columns[3]?.trim() || '';
+          const correo = columns[6]?.trim();
+
+          const fullName = `${nombre} ${apPaterno} ${apMaterno}`.trim();
+
+          if (correo) {
+            students.push({ matricula, email: correo, name: fullName });
+          }
+        }
+
+        if (students.length === 0) {
+          setUploadMessage({ text: `No se encontraron correos. Revisa tu archivo CSV.`, type: 'error' });
+          setIsUploadingList(false);
+          setStudentFile(null);
+          return;
+        }
+
+        const res = await fetch('/api/professor/students/bulk', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ subjectId: subject.id, students }),
+        });
+        
+        const data = await res.json();
+        
+        if (data.success) {
+          setUploadMessage({ text: `¡${students.length} estudiantes procesados con éxito!`, type: 'success' });
+          setStudentFile(null);
+          if (selectedSessionId) fetchRecords(selectedSessionId);
+        } else {
+          setUploadMessage({ text: 'Hubo un error al procesar la lista en el servidor.', type: 'error' });
+        }
+      } catch (error) {
+        setUploadMessage({ text: 'Ocurrió un error inesperado al leer el archivo.', type: 'error' });
+      } finally {
+        setIsUploadingList(false);
       }
     };
     reader.readAsText(studentFile);
@@ -275,7 +306,6 @@ const handleStudentUpload = async () => {
           </div>
           
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {/* Bloque de Horarios */}
             <div className="bg-white/10 p-4 rounded-2xl border border-white/10 backdrop-blur-sm">
               <h3 className="text-blue-200 text-xs uppercase tracking-wider font-semibold mb-3 flex items-center gap-2">
                 <Clock className="w-4 h-4" /> Horarios de Clase
@@ -289,7 +319,6 @@ const handleStudentUpload = async () => {
               </div>
             </div>
 
-            {/* Bloque de Salones */}
             <div className="bg-white/10 p-4 rounded-2xl border border-white/10 backdrop-blur-sm">
               <h3 className="text-blue-200 text-xs uppercase tracking-wider font-semibold mb-3 flex items-center gap-2">
                 <MapPin className="w-4 h-4" /> Salones Asignados
@@ -307,9 +336,8 @@ const handleStudentUpload = async () => {
         <div className="absolute right-0 top-0 w-64 h-64 bg-blue-500 rounded-full blur-3xl opacity-20 transform translate-x-1/3 -translate-y-1/3"></div>
       </div>
 
-      {/* Resto de la interfaz (Tokens, Asistencia, etc.) */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 pt-4">
-        {/* Left Column: Actions */}
+        {/* Columna Izquierda: Acciones */}
         <div className="space-y-6">
           <div className="bg-white p-6 rounded-2xl shadow-sm border border-blue-100">
             <h3 className="font-bold text-slate-800 mb-4 flex items-center gap-2">
@@ -336,6 +364,7 @@ const handleStudentUpload = async () => {
             )}
           </div>
 
+          {/* TARJETA MEJORADA: IMPORTAR ALUMNOS */}
           <div className="bg-white p-6 rounded-2xl shadow-sm border border-blue-100">
             <h3 className="font-bold text-slate-800 mb-4 flex items-center gap-2">
               <Upload className="w-5 h-5 text-blue-600" />
@@ -345,20 +374,49 @@ const handleStudentUpload = async () => {
               <input
                 type="file"
                 accept=".csv"
-                onChange={(e) => setStudentFile(e.target.files?.[0] || null)}
-                className="block w-full text-sm text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100 transition-colors"
+                disabled={isUploadingList}
+                onChange={(e) => {
+                  setStudentFile(e.target.files?.[0] || null);
+                  setUploadMessage({ text: '', type: '' });
+                }}
+                className="block w-full text-sm text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100 transition-colors disabled:opacity-50"
               />
               <button
                 onClick={handleStudentUpload}
-                disabled={!studentFile}
-                className="w-full bg-slate-100 hover:bg-slate-200 text-slate-700 py-2.5 rounded-xl font-medium disabled:opacity-50 transition-colors"
+                disabled={!studentFile || isUploadingList}
+                className="w-full bg-slate-100 hover:bg-blue-50 hover:text-blue-700 text-slate-700 py-2.5 rounded-xl font-medium disabled:opacity-50 transition-all flex items-center justify-center gap-2"
               >
-                Cargar Lista
+                {isUploadingList ? (
+                  <>
+                    <Loader2 className="w-5 h-5 animate-spin text-blue-600" />
+                    Procesando Archivo...
+                  </>
+                ) : (
+                  'Cargar Lista'
+                )}
               </button>
-              <p className="text-xs text-slate-400 text-center">CSV requerido: Matricula, Email, Nombre</p>
+              
+              {/* Nuevo bloque de mensajes visuales */}
+              {uploadMessage.text && (
+                <motion.div 
+                  initial={{ opacity: 0, y: -10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  className={`p-3 rounded-xl flex items-start gap-2 text-sm border ${
+                    uploadMessage.type === 'success' ? 'bg-green-50 text-green-700 border-green-200' : 'bg-red-50 text-red-700 border-red-200'
+                  }`}
+                >
+                  {uploadMessage.type === 'success' ? <CheckCircle className="w-5 h-5 shrink-0" /> : <AlertCircle className="w-5 h-5 shrink-0" />}
+                  <p className="font-medium mt-0.5">{uploadMessage.text}</p>
+                </motion.div>
+              )}
+              
+              {!uploadMessage.text && (
+                <p className="text-xs text-slate-400 text-center">Asegúrate que el correo esté en la columna 7</p>
+              )}
             </div>
           </div>
 
+          {/* TARJETA MEJORADA: AGREGAR MANUAL */}
           <div className="bg-white p-6 rounded-2xl shadow-sm border border-blue-100">
             <h3 className="font-bold text-slate-800 mb-4 flex items-center gap-2">
               <Users className="w-5 h-5 text-blue-600" />
@@ -388,15 +446,30 @@ const handleStudentUpload = async () => {
               />
               <button
                 onClick={handleManualAdd}
-                className="w-full bg-blue-600 hover:bg-blue-700 text-white py-2.5 rounded-xl font-medium transition-colors mt-2"
+                disabled={isSubmittingManual}
+                className="w-full bg-blue-600 hover:bg-blue-700 text-white py-2.5 rounded-xl font-medium transition-colors mt-2 flex justify-center items-center gap-2 disabled:opacity-70"
               >
-                Agregar Alumno
+                {isSubmittingManual ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
+                {isSubmittingManual ? 'Guardando...' : 'Agregar Alumno'}
               </button>
+
+              {/* Mensaje visual para el modo manual */}
+              {manualMessage.text && (
+                <motion.div 
+                  initial={{ opacity: 0, scale: 0.95 }}
+                  animate={{ opacity: 1, scale: 1 }}
+                  className={`p-2 mt-2 rounded-lg text-xs text-center font-medium ${
+                    manualMessage.type === 'success' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'
+                  }`}
+                >
+                  {manualMessage.text}
+                </motion.div>
+              )}
             </div>
           </div>
         </div>
 
-        {/* Right Column: Attendance Records */}
+        {/* Columna Derecha: Lista de Asistencia (sin cambios) */}
         <div className="lg:col-span-2 bg-white rounded-2xl shadow-sm border border-blue-100 overflow-hidden flex flex-col h-full">
           <div className="p-6 border-b border-blue-50 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
             <h3 className="font-bold text-slate-800 flex items-center gap-2">
