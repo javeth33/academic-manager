@@ -119,6 +119,30 @@ async function startServer() {
       console.log(`⚠️ No se ejecutó la búsqueda. Rol: "${role}"`);
     }
 
+    // 🌟 MAGIA RETROACTIVA PARA ALUMNOS
+    if (role === 'student' && user) {
+      const emailLower = email.trim().toLowerCase();
+      console.log(`🕵️ Buscando clases en espera para el correo: "${emailLower}"`);
+      
+      const { data: clasesPendientes } = await supabase
+        .from('inscripciones')
+        .select('id')
+        .eq('alumno_temp', emailLower); 
+
+      if (clasesPendientes && clasesPendientes.length > 0) {
+        const ids = clasesPendientes.map(c => c.id);
+        const { error: errUpdate } = await supabase
+          .from('inscripciones')
+          .update({ alumno_id: user.id, alumno_temp: null })
+          .in('id', ids);
+          
+        if (errUpdate) console.log(`❌ Error al inscribir alumno:`, errUpdate);
+        else console.log(`🎉 ¡Alumno ${name} auto-inscrito en sus materias!`);
+      } else {
+        console.log(`⚠️ No se encontraron clases pendientes para este correo.`);
+      }
+    }
+
     res.json({ 
       success: true, 
       user: { id: user.id, name: user.nombre, email: user.correo, role: user.rol } 
@@ -181,32 +205,47 @@ async function startServer() {
     res.json({ subjects });
   });
 
-  // Subir estudiantes masivamente a una clase
+// Subir estudiantes masivamente a una clase (Con espera retroactiva)
   app.post("/api/professor/students/bulk", async (req, res) => {
     const { subjectId, students } = req.body; 
 
+    console.log(`\n📥 [BACKEND] Recibiendo ${students?.length || 0} alumnos para la materia ID: ${subjectId}`);
+
+    if (!students || students.length === 0) {
+      return res.status(400).json({ success: false, message: "La lista de alumnos llegó vacía." });
+    }
+
     try {
       for (const s of students) {
-        // Buscar si el alumno ya existe
-        let { data: user } = await supabase.from('usuarios').select('id').eq('correo', s.email).single();
+        const emailExcel = s.email.trim().toLowerCase();
+        console.log(`⏳ Procesando alumno: ${emailExcel}`);
         
-        // Si no existe, crearlo
-        if (!user) {
-          const { data: newUser } = await supabase
-            .from('usuarios')
-            .insert([{ nombre: s.name, correo: s.email, contrasena: 'student123', rol: 'student', matricula: s.matricula }])
-            .select('id')
-            .single();
-          user = newUser;
-        }
+        // 1. Buscamos si el alumno ya existe en el sistema por su correo
+        const { data: user } = await supabase
+          .from('usuarios')
+          .select('id')
+          .eq('correo', emailExcel)
+          .single();
 
-        // Inscribirlo en la materia
-        if (user) {
-          await supabase.from('inscripciones').upsert({ materia_id: subjectId, alumno_id: user.id });
+        // 2. Lo inscribimos a la materia
+        const { error: insertError } = await supabase
+          .from('inscripciones')
+          .insert([{ 
+            materia_id: subjectId, 
+            alumno_id: user ? user.id : null,
+            alumno_temp: user ? null : emailExcel
+          }]);
+
+        // 🎤 MICRÓFONO PARA SUPABASE
+        if (insertError) {
+          console.log(`❌ Error Supabase con ${emailExcel}:`, insertError.message);
+        } else {
+          console.log(`✅ Inscripción guardada para: ${emailExcel}`);
         }
       }
       res.json({ success: true });
     } catch (error: any) {
+      console.log("🚨 [BACKEND] Error catastrófico:", error);
       res.status(500).json({ success: false, message: error.message });
     }
   });

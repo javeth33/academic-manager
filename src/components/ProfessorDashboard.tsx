@@ -187,18 +187,40 @@ function SubjectDetail({ subject, onBack }: { subject: Subject; onBack: () => vo
     }
   };
 
-  const handleStudentUpload = async () => {
+const handleStudentUpload = async () => {
     if (!studentFile) return;
     const reader = new FileReader();
+    
     reader.onload = async (e) => {
       const text = e.target?.result as string;
-      const lines = text.split('\n');
+      const lines = text.split('\n').map(line => line.replace('\r', '')).filter(line => line.trim() !== '');
       const students = [];
+      
+      // 🌟 MAGIA: Detectar si Excel usó comas o puntos y comas
+      const separator = lines[0].includes(';') ? ';' : ',';
+      
       for (let i = 1; i < lines.length; i++) {
-        const line = lines[i].trim();
-        if (!line) continue;
-        const [matricula, email, name] = line.split(',');
-        if (email && name) students.push({ matricula, email, name });
+        const columns = lines[i].split(separator);
+        
+        // Columnas: Matricula(0), Nombre(1), ApPaterno(2), ApMaterno(3), Carrera(4), Semestre(5), Correo(6)
+        const matricula = columns[0]?.trim();
+        const nombre = columns[1]?.trim() || '';
+        const apPaterno = columns[2]?.trim() || '';
+        const apMaterno = columns[3]?.trim() || '';
+        const correo = columns[6]?.trim();
+
+        const fullName = `${nombre} ${apPaterno} ${apMaterno}`.trim();
+
+        if (correo) {
+          students.push({ matricula, email: correo, name: fullName });
+        }
+      }
+
+      // 🚨 Si después de buscar no encontró correos, detenemos todo y avisamos
+      if (students.length === 0) {
+        alert(`No se detectaron correos en la columna 7. Revisa tu archivo CSV. Separador detectado: "${separator}"`);
+        setStudentFile(null);
+        return;
       }
 
       const res = await fetch('/api/professor/students/bulk', {
@@ -206,11 +228,14 @@ function SubjectDetail({ subject, onBack }: { subject: Subject; onBack: () => vo
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ subjectId: subject.id, students }),
       });
+      
       const data = await res.json();
       if (data.success) {
-        alert('Estudiantes cargados exitosamente');
+        alert(`¡${students.length} estudiantes procesados exitosamente!`);
         setStudentFile(null);
         if (selectedSessionId) fetchRecords(selectedSessionId);
+      } else {
+        alert('Hubo un error al procesar la lista en el servidor.');
       }
     };
     reader.readAsText(studentFile);
