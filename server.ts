@@ -8,10 +8,12 @@ import path from "path";
 initDb();
 // Configuración de Nodemailer
 const transporter = nodemailer.createTransport({
-  service: 'gmail',
+  host: 'smtp.gmail.com',
+  port: 465,
+  secure: true, // true para el puerto 465
   auth: {
-    user: 'rojasdiego133@gmail.com', // Escribe tu Gmail real
-    pass: 'ptipiumlrclmfxkr' // Pega la contraseña de aplicación (sin espacios)
+    user: 'rojasdiego133@gmail.com', 
+    pass: 'jajvpdsrkkwqbqzm' 
   }
 });
 async function startServer() {
@@ -264,13 +266,13 @@ async function startServer() {
           // ✉️ ENVIAR EL CORREO SI SE GUARDÓ BIEN
           try {
             await transporter.sendMail({
-              from: '"BUAP Academic" <rojasdiego133@gmail.com>',
+              from: '"Control Academico BUAP" <rojasdiego133@gmail.com>',
               to: emailExcel,
               subject: `🔑 Código de acceso para: ${subjectName}`,
               html: `
                 <div style="font-family: Arial, sans-serif; padding: 20px; color: #333; max-width: 600px; margin: 0 auto; border: 1px solid #e2e8f0; border-radius: 10px;">
                   <h2 style="color: #1e3a8a; text-align: center;">¡Hola, ${s.name}!</h2>
-                  <p>Tu profesor te ha agregado a la clase de <strong>${subjectName}</strong> en el sistema BUAP Academic.</p>
+                  <p>Tu profesor te ha agregado a la clase de <strong>${subjectName}</strong> en el sistema Control Academico BUAP.</p>
                   <p>Para desbloquear tu clase y ver tu horario, salón y pasar asistencia, ingresa el siguiente código de acceso en tu panel:</p>
                   
                   <div style="background-color: #eff6ff; padding: 20px; text-align: center; border-radius: 8px; margin: 30px 0; border: 2px dashed #93c5fd;">

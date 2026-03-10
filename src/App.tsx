@@ -23,7 +23,7 @@ export default function App() {
           <div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center text-white font-bold">
             A
           </div>
-          <span className="font-bold text-blue-900">Academic Blue</span>
+          <span className="font-bold text-blue-900">Control Academico BUAP</span>
         </div>
         <div className="flex items-center gap-4">
           <div className="text-right hidden sm:block">
