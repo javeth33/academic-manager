@@ -410,9 +410,7 @@ function SubjectDetail({ subject, onBack }: { subject: Subject; onBack: () => vo
                 </motion.div>
               )}
               
-              {!uploadMessage.text && (
-                <p className="text-xs text-slate-400 text-center">Asegúrate que el correo esté en la columna 7</p>
-              )}
+              
             </div>
           </div>
 
