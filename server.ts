@@ -10,12 +10,14 @@ initDb();
 const transporter = nodemailer.createTransport({
   host: 'smtp.gmail.com',
   port: 465,
-  secure: true, // true para el puerto 465
+  secure: true,
   auth: {
     user: 'rojasdiego133@gmail.com', 
-    pass: 'jajvpdsrkkwqbqzm' 
-  }
-});
+    pass: process.env.GMAIL_PASSWORD 
+  },
+  family: 4 
+} as any); 
+
 async function startServer() {
   const app = express();
   const PORT = process.env.PORT ? parseInt(process.env.PORT) : 3000;
