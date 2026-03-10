@@ -192,12 +192,7 @@ export default function Login({ onLogin }: LoginProps) {
           </button>
         </div>
 
-        {!isRegistering && (
-          <div className="mt-6 text-center text-xs text-slate-400">
-            <p>Cuentas Demo:</p>
-            <p>Admin: admin@school.com / admin123</p>
-          </div>
-        )}
+        
       </motion.div>
     </div>
   );
