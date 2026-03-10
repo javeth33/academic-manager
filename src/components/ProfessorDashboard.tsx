@@ -359,7 +359,7 @@ function SubjectDetail({ subject, onBack }: { subject: Subject; onBack: () => vo
                 onClick={generateToken}
                 className="w-full bg-blue-600 hover:bg-blue-700 text-white py-3 rounded-xl font-medium shadow-lg shadow-blue-200 transition-all"
               >
-                Generar Token
+                PIN de Asistencia
               </button>
             )}
           </div>
