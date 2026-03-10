@@ -1,10 +1,18 @@
 import express from "express";
 import { createServer as createViteServer } from "vite";
 import { supabase, initDb } from "./src/db";
-
+import nodemailer from 'nodemailer';
+import crypto from 'crypto';
 // Inicializamos la conexión a Supabase
 initDb();
-
+// Configuración de Nodemailer
+const transporter = nodemailer.createTransport({
+  service: 'gmail',
+  auth: {
+    user: 'rojasdiego133@gmail.com', // Escribe tu Gmail real
+    pass: 'ptipiumlrclmfxkr' // Pega la contraseña de aplicación (sin espacios)
+  }
+});
 async function startServer() {
   const app = express();
   const PORT = 3000;
@@ -205,7 +213,7 @@ async function startServer() {
     res.json({ subjects });
   });
 
-// Subir estudiantes masivamente a una clase (Con espera retroactiva)
+// Subir estudiantes masivamente a una clase (Con Tokens y Correos)
   app.post("/api/professor/students/bulk", async (req, res) => {
     const { subjectId, students } = req.body; 
 
@@ -216,31 +224,66 @@ async function startServer() {
     }
 
     try {
+      // 1. Obtener el nombre de la materia para el correo
+      const { data: subjectData } = await supabase
+        .from('materias')
+        .select('nombre')
+        .eq('id', subjectId)
+        .single();
+      
+      const subjectName = subjectData?.nombre || 'tu nueva materia';
+
       for (const s of students) {
         const emailExcel = s.email.trim().toLowerCase();
         console.log(`⏳ Procesando alumno: ${emailExcel}`);
         
-        // 1. Buscamos si el alumno ya existe en el sistema por su correo
+        // Generar token único de 6 caracteres (ej. A4F9B2)
+        const token = crypto.randomBytes(3).toString('hex').toUpperCase();
+
         const { data: user } = await supabase
           .from('usuarios')
           .select('id')
           .eq('correo', emailExcel)
           .single();
 
-        // 2. Lo inscribimos a la materia
+        // Inscribir a la materia guardando el token y el estatus
         const { error: insertError } = await supabase
           .from('inscripciones')
           .insert([{ 
             materia_id: subjectId, 
             alumno_id: user ? user.id : null,
-            alumno_temp: user ? null : emailExcel
+            alumno_temp: user ? null : emailExcel,
+            token_acceso: token,
+            estatus: 'pendiente'
           }]);
 
-        // 🎤 MICRÓFONO PARA SUPABASE
         if (insertError) {
           console.log(`❌ Error Supabase con ${emailExcel}:`, insertError.message);
         } else {
-          console.log(`✅ Inscripción guardada para: ${emailExcel}`);
+          // ✉️ ENVIAR EL CORREO SI SE GUARDÓ BIEN
+          try {
+            await transporter.sendMail({
+              from: '"BUAP Academic" <tu_correo@gmail.com>', // Pon tu correo aquí también
+              to: emailExcel,
+              subject: `🔑 Código de acceso para: ${subjectName}`,
+              html: `
+                <div style="font-family: Arial, sans-serif; padding: 20px; color: #333; max-width: 600px; margin: 0 auto; border: 1px solid #e2e8f0; border-radius: 10px;">
+                  <h2 style="color: #1e3a8a; text-align: center;">¡Hola, ${s.name}!</h2>
+                  <p>Tu profesor te ha agregado a la clase de <strong>${subjectName}</strong> en el sistema BUAP Academic.</p>
+                  <p>Para desbloquear tu clase y ver tu horario, salón y pasar asistencia, ingresa el siguiente código de acceso en tu panel:</p>
+                  
+                  <div style="background-color: #eff6ff; padding: 20px; text-align: center; border-radius: 8px; margin: 30px 0; border: 2px dashed #93c5fd;">
+                    <h1 style="color: #2563eb; letter-spacing: 8px; margin: 0; font-size: 32px;">${token}</h1>
+                  </div>
+                  
+                  <p style="color: #64748b; font-size: 14px;">Si aún no tienes cuenta, regístrate con este mismo correo (${emailExcel}) en nuestra plataforma y tu materia te estará esperando.</p>
+                </div>
+              `
+            });
+            console.log(`✅ Inscrito y correo enviado a: ${emailExcel}`);
+          } catch (mailError) {
+            console.log(`⚠️ Alumno inscrito, pero falló el envío de correo a ${emailExcel}:`, mailError);
+          }
         }
       }
       res.json({ success: true });
@@ -248,22 +291,6 @@ async function startServer() {
       console.log("🚨 [BACKEND] Error catastrófico:", error);
       res.status(500).json({ success: false, message: error.message });
     }
-  });
-
-  // Generar Token de Asistencia
-  app.post("/api/professor/attendance/token", async (req, res) => {
-    const { subjectId } = req.body;
-    const token = Math.random().toString(36).substring(2, 8).toUpperCase();
-    const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString(); // 10 mins
-
-    const { data: session, error } = await supabase
-      .from('sesiones_asistencia')
-      .insert([{ materia_id: subjectId, token, fecha_expiracion: expiresAt }])
-      .select()
-      .single();
-
-    if (error) return res.status(500).json({ success: false, message: error.message });
-    res.json({ success: true, token, sessionId: session.id, expiresAt: session.fecha_expiracion });
   });
 
   // Obtener sesiones pasadas de una materia

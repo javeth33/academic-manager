@@ -63,7 +63,7 @@ export default function Login({ onLogin }: LoginProps) {
         className="bg-white p-8 rounded-2xl shadow-xl w-full max-w-md z-10 border border-blue-50"
       >
         <div className="text-center mb-8">
-          <h1 className="text-3xl font-bold text-blue-900">BUAP Academic</h1>
+          <h1 className="text-3xl font-bold text-blue-900">Control Academico BUAP</h1>
           <p className="text-blue-500 mt-2">
             {isRegistering ? 'Crea tu cuenta' : '¡Bienvenido! Por favor inicia sesión.'}
           </p>
@@ -87,7 +87,7 @@ export default function Login({ onLogin }: LoginProps) {
                     value={name}
                     onChange={(e) => setName(e.target.value)}
                     className="w-full pl-10 pr-4 py-3 rounded-xl border border-blue-100 focus:border-blue-500 focus:ring-2 focus:ring-blue-200 outline-none transition-all"
-                    placeholder="Juan Pérez"
+                    placeholder="Rojas Baltazar Juan"
                     required
                   />
                 </div>
@@ -131,7 +131,7 @@ export default function Login({ onLogin }: LoginProps) {
                       value={matricula}
                       onChange={(e) => setMatricula(e.target.value)}
                       className="w-full pl-10 pr-4 py-3 rounded-xl border border-blue-100 focus:border-blue-500 focus:ring-2 focus:ring-blue-200 outline-none transition-all"
-                      placeholder="A01234567"
+                      placeholder="1234567"
                       required
                     />
                   </div>
