@@ -3,6 +3,7 @@ import { createServer as createViteServer } from "vite";
 import { supabase, initDb } from "./src/db";
 import nodemailer from 'nodemailer';
 import crypto from 'crypto';
+import path from "path";
 // Inicializamos la conexión a Supabase
 initDb();
 // Configuración de Nodemailer
@@ -15,7 +16,7 @@ const transporter = nodemailer.createTransport({
 });
 async function startServer() {
   const app = express();
-  const PORT = 3000;
+  const PORT = process.env.PORT ? parseInt(process.env.PORT) : 3000;
 
   app.use(express.json());
 
@@ -263,7 +264,7 @@ async function startServer() {
           // ✉️ ENVIAR EL CORREO SI SE GUARDÓ BIEN
           try {
             await transporter.sendMail({
-              from: '"BUAP Academic" <tu_correo@gmail.com>', // Pon tu correo aquí también
+              from: '"BUAP Academic" <rojasdiego133@gmail.com>',
               to: emailExcel,
               subject: `🔑 Código de acceso para: ${subjectName}`,
               html: `
@@ -396,8 +397,14 @@ async function startServer() {
       appType: "spa",
     });
     app.use(vite.middlewares);
+  }else {
+    // 🌟 MODO PRODUCCIÓN: Servir los archivos compilados
+    app.use(express.static(path.resolve("dist")));
+    app.get("*", (req, res) => {
+      res.sendFile(path.resolve("dist", "index.html"));
+    });
   }
-
+  
   app.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running on http://localhost:${PORT}`);
   });
