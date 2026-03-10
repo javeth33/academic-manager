@@ -1,22 +1,11 @@
 import express from "express";
 import { createServer as createViteServer } from "vite";
 import { supabase, initDb } from "./src/db";
-import nodemailer from 'nodemailer';
 import crypto from 'crypto';
 import path from "path";
 // Inicializamos la conexión a Supabase
 initDb();
-// Configuración de Nodemailer
-const transporter = nodemailer.createTransport({
-  host: 'smtp.gmail.com',
-  port: 465,
-  secure: true,
-  auth: {
-    user: 'rojasdiego133@gmail.com', 
-    pass: 'jajvpdsrkkwqbqzm'
-  },
-  family: 4 
-} as any); 
+
 
 async function startServer() {
   const app = express();
@@ -266,15 +255,16 @@ async function startServer() {
           console.log(`❌ Error Supabase con ${emailExcel}:`, insertError.message);
         } else {
           // ✉️ ENVIAR EL CORREO SI SE GUARDÓ BIEN
+          // ✉️ ENVIAR EL CORREO VÍA API DE BREVO (A prueba de Render)
           try {
-            await transporter.sendMail({
-              from: '"Control Academico BUAP" <rojasdiego133@gmail.com>',
-              to: emailExcel,
+            const emailData = {
+              sender: { name: "BUAP Academic", email: "rojasdiego133@gmail.com" }, // Debe ser el correo verificado en Brevo
+              to: [{ email: emailExcel, name: s.name }],
               subject: `🔑 Código de acceso para: ${subjectName}`,
-              html: `
+              htmlContent: `
                 <div style="font-family: Arial, sans-serif; padding: 20px; color: #333; max-width: 600px; margin: 0 auto; border: 1px solid #e2e8f0; border-radius: 10px;">
                   <h2 style="color: #1e3a8a; text-align: center;">¡Hola, ${s.name}!</h2>
-                  <p>Tu profesor te ha agregado a la clase de <strong>${subjectName}</strong> en el sistema Control Academico BUAP.</p>
+                  <p>Tu profesor te ha agregado a la clase de <strong>${subjectName}</strong> en el sistema BUAP Academic.</p>
                   <p>Para desbloquear tu clase y ver tu horario, salón y pasar asistencia, ingresa el siguiente código de acceso en tu panel:</p>
                   
                   <div style="background-color: #eff6ff; padding: 20px; text-align: center; border-radius: 8px; margin: 30px 0; border: 2px dashed #93c5fd;">
@@ -284,10 +274,28 @@ async function startServer() {
                   <p style="color: #64748b; font-size: 14px;">Si aún no tienes cuenta, regístrate con este mismo correo (${emailExcel}) en nuestra plataforma y tu materia te estará esperando.</p>
                 </div>
               `
+            };
+
+            // Hacemos la petición directa al servidor de Brevo usando HTTPS (Puerto 443 - Permitido en Render)
+            const response = await fetch("https://api.brevo.com/v3/smtp/email", {
+              method: "POST",
+              headers: {
+                "accept": "application/json",
+                "api-key": process.env.BREVO_API_KEY || "",
+                "content-type": "application/json"
+              },
+              body: JSON.stringify(emailData)
             });
-            console.log(`✅ Inscrito y correo enviado a: ${emailExcel}`);
+
+            if (!response.ok) {
+              const errorDetalle = await response.text();
+              console.log(`⚠️ Brevo rechazó el correo para ${emailExcel}:`, errorDetalle);
+            } else {
+              console.log(`✅ Inscrito y correo HTTP enviado a: ${emailExcel}`);
+            }
+
           } catch (mailError) {
-            console.log(`⚠️ Alumno inscrito, pero falló el envío de correo a ${emailExcel}:`, mailError);
+            console.log(`🚨 Error de red conectando con Brevo para ${emailExcel}:`, mailError);
           }
         }
       }
