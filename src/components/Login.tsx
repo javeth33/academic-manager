@@ -94,7 +94,7 @@ export default function Login({ onLogin }: LoginProps) {
               </div>
 
               <div>
-                <label className="block text-sm font-medium text-slate-700 mb-1">Tipo de Usuario</label>
+                <label className="block text-sm font-medium text-slate-700 mb-1">Tipo de Usuario_PruebaCommit</label>
                 <div className="flex gap-4">
                   <label className="flex items-center gap-2 cursor-pointer">
                     <input 
