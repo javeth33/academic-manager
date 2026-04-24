@@ -1,6 +1,8 @@
 import React, { useState, useEffect } from 'react';
-import { BookOpen, Clock, MapPin, CheckCircle } from 'lucide-react';
+import { BookOpen, Clock, MapPin, CheckCircle, QrCode } from 'lucide-react';
 import { motion } from 'motion/react';
+import StudentQR from './StudentQR';
+
 
 interface StudentDashboardProps {
   user: any;
@@ -87,8 +89,34 @@ export default function StudentDashboard({ user }: StudentDashboardProps) {
             {message && (
               <div className={`mt-4 p-3 rounded-lg text-sm text-center ${message.includes('Éxito') ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-700'}`}>
                 {message}
+
               </div>
             )}
+            {message && (
+              <div className={`mt-4 p-3 rounded-lg text-sm text-center ${message.includes('Éxito') ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-700'}`}>
+                {message}
+              </div>
+            )}
+
+            <div className="bg-white p-6 rounded-2xl shadow-lg shadow-blue-100 border border-blue-100 mt-6">
+              <h3 className="text-xl font-bold text-blue-900 mb-4 flex items-center gap-2">
+                <QrCode className="w-6 h-6 text-blue-500" />
+                Ver mi código QR
+              </h3>
+
+              <p className="text-sm text-slate-500 mb-4">
+                Muestra este código al profesor para registrar tu asistencia.
+              </p>
+
+              <StudentQR matricula={user.matricula} />
+
+              <button
+                onClick={() => window.print()}
+                className="w-full mt-4 bg-blue-600 hover:bg-blue-700 text-white font-semibold py-3 rounded-xl"
+              >
+                Imprimir QR
+              </button>
+            </div>
           </div>
         </div>
 
@@ -118,7 +146,7 @@ export default function StudentDashboard({ user }: StudentDashboardProps) {
                     {subject.nrc}
                   </span>
                 </div>
-                
+
                 <div className="flex gap-6 text-sm text-slate-500">
                   <div className="flex items-center gap-2">
                     <Clock className="w-4 h-4" />
