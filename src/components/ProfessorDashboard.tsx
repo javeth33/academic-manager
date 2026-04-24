@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
-import { Users, Clock, Calendar, Upload, CheckSquare, ArrowLeft, MapPin, Loader2, CheckCircle, AlertCircle } from 'lucide-react';
+import { Users, Clock, Calendar, Upload, CheckSquare, ArrowLeft, MapPin, Loader2, CheckCircle, AlertCircle, QrCode, X } from 'lucide-react';
 import { motion } from 'motion/react';
+import QRScanner from './QRScanner';
 
 interface Subject {
   id: number;
@@ -18,6 +19,8 @@ export default function ProfessorDashboard({ user }: ProfessorDashboardProps) {
   const [subjects, setSubjects] = useState<Subject[]>([]);
   const [selectedSubject, setSelectedSubject] = useState<Subject | null>(null);
   const [loading, setLoading] = useState(true);
+  const [scannerSubject, setScannerSubject] = useState<Subject | null>(null);
+  const [lastScan, setLastScan] = useState<string | null>(null);
 
   useEffect(() => {
     fetchSubjects();
@@ -45,9 +48,10 @@ export default function ProfessorDashboard({ user }: ProfessorDashboardProps) {
       </header>
 
       {selectedSubject ? (
-        <SubjectDetail 
-          subject={selectedSubject} 
-          onBack={() => setSelectedSubject(null)} 
+        <SubjectDetail
+          subject={selectedSubject}
+          onBack={() => setSelectedSubject(null)}
+          onScanClick={() => setScannerSubject(selectedSubject)}
         />
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
@@ -57,9 +61,9 @@ export default function ProfessorDashboard({ user }: ProfessorDashboardProps) {
               <p className="text-slate-500 mt-2">Cargando materias...</p>
             </div>
           ) : subjects.length === 0 ? (
-             <div className="col-span-3 text-center py-12 bg-white rounded-2xl border border-blue-100">
-               <p className="text-slate-500">No hay materias asignadas aún.</p>
-             </div>
+            <div className="col-span-3 text-center py-12 bg-white rounded-2xl border border-blue-100">
+              <p className="text-slate-500">No hay materias asignadas aún.</p>
+            </div>
           ) : (
             subjects.map((subject) => (
               <motion.div
@@ -77,7 +81,7 @@ export default function ProfessorDashboard({ user }: ProfessorDashboardProps) {
                   </div>
                 </div>
                 <h3 className="text-xl font-bold text-slate-800 mb-4 flex-grow">{subject.name}</h3>
-                
+
                 <div className="space-y-3 text-sm">
                   <div>
                     <div className="flex items-center gap-2 text-slate-700 font-medium mb-1.5">
@@ -91,7 +95,7 @@ export default function ProfessorDashboard({ user }: ProfessorDashboardProps) {
                       ))}
                     </div>
                   </div>
-                  
+
                   <div>
                     <div className="flex items-center gap-2 text-slate-700 font-medium mb-1.5">
                       <MapPin className="w-4 h-4 text-blue-500" /> Salones
@@ -105,19 +109,65 @@ export default function ProfessorDashboard({ user }: ProfessorDashboardProps) {
                     </div>
                   </div>
                 </div>
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setScannerSubject(subject);
+                  }}
+                  className="mt-5 w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2 rounded-xl flex items-center justify-center gap-2"
+                >
+                  <QrCode className="w-4 h-4" />
+                  Escanear QR
+                </button>
               </motion.div>
             ))
           )}
+        </div>
+      )}
+      {scannerSubject && (
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl p-6 w-full max-w-md shadow-xl">
+            <div className="flex justify-between items-center mb-4">
+              <div>
+                <h2 className="text-xl font-bold text-blue-900">Escanear QR</h2>
+                <p className="text-sm text-slate-500">
+                  Materia: {scannerSubject.name}
+                </p>
+              </div>
+
+              <button
+                onClick={() => {
+                  setScannerSubject(null);
+                  setLastScan(null);
+                }}
+                className="text-slate-500 hover:text-red-500"
+              >
+                <X className="w-6 h-6" />
+              </button>
+            </div>
+
+            <QRScanner
+              onScan={(matricula) => {
+                setLastScan(matricula);
+              }}
+            />
+          </div>
+        </div>
+      )}
+
+      {lastScan && (
+        <div className="fixed bottom-6 right-6 bg-green-600 text-white px-5 py-3 rounded-xl shadow-lg z-50">
+          Matrícula escaneada: {lastScan}
         </div>
       )}
     </div>
   );
 }
 
-function SubjectDetail({ subject, onBack }: { subject: Subject; onBack: () => void }) {
+function SubjectDetail({ subject, onBack, onScanClick }: { subject: Subject; onBack: () => void; onScanClick: () => void; }) {
   const [token, setToken] = useState<string | null>(null);
   const [expiresAt, setExpiresAt] = useState<string | null>(null);
-  
+
   // --- ESTADOS DE LA CARGA MASIVA ---
   const [studentFile, setStudentFile] = useState<File | null>(null);
   const [isUploadingList, setIsUploadingList] = useState(false);
@@ -211,23 +261,23 @@ function SubjectDetail({ subject, onBack }: { subject: Subject; onBack: () => vo
   // --- FUNCIÓN MEJORADA: CARGA MASIVA ---
   const handleStudentUpload = async () => {
     if (!studentFile) return;
-    
+
     setIsUploadingList(true);
     setUploadMessage({ text: '', type: '' });
 
     const reader = new FileReader();
-    
+
     reader.onload = async (e) => {
       try {
         const text = e.target?.result as string;
         const lines = text.split('\n').map(line => line.replace('\r', '')).filter(line => line.trim() !== '');
         const students = [];
-        
+
         const separator = lines[0].includes(';') ? ';' : ',';
-        
+
         for (let i = 1; i < lines.length; i++) {
           const columns = lines[i].split(separator);
-          
+
           const matricula = columns[0]?.trim();
           const nombre = columns[1]?.trim() || '';
           const apPaterno = columns[2]?.trim() || '';
@@ -253,9 +303,9 @@ function SubjectDetail({ subject, onBack }: { subject: Subject; onBack: () => vo
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ subjectId: subject.id, students }),
         });
-        
+
         const data = await res.json();
-        
+
         if (data.success) {
           setUploadMessage({ text: `¡${students.length} estudiantes procesados con éxito!`, type: 'success' });
           setStudentFile(null);
@@ -275,19 +325,19 @@ function SubjectDetail({ subject, onBack }: { subject: Subject; onBack: () => vo
   const toggleAttendance = async (studentId: number, currentStatus: string) => {
     if (!selectedSessionId) return;
     const newStatus = currentStatus === 'present' ? 'absent' : 'present';
-    
+
     await fetch('/api/professor/attendance/update', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ sessionId: selectedSessionId, studentId, status: newStatus }),
     });
-    
+
     fetchRecords(selectedSessionId);
   };
 
   return (
     <div className="space-y-6">
-      <button 
+      <button
         onClick={onBack}
         className="flex items-center gap-2 text-slate-500 hover:text-blue-600 transition-colors font-medium mb-2"
       >
@@ -304,7 +354,7 @@ function SubjectDetail({ subject, onBack }: { subject: Subject; onBack: () => vo
               NRC: {subject.nrc}
             </span>
           </div>
-          
+
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div className="bg-white/10 p-4 rounded-2xl border border-white/10 backdrop-blur-sm">
               <h3 className="text-blue-200 text-xs uppercase tracking-wider font-semibold mb-3 flex items-center gap-2">
@@ -355,12 +405,22 @@ function SubjectDetail({ subject, onBack }: { subject: Subject; onBack: () => vo
                 </p>
               </div>
             ) : (
-              <button
-                onClick={generateToken}
-                className="w-full bg-blue-600 hover:bg-blue-700 text-white py-3 rounded-xl font-medium shadow-lg shadow-blue-200 transition-all"
-              >
-                PIN de Asistencia
-              </button>
+              <>
+                <button
+                  onClick={generateToken}
+                  className="w-full bg-blue-600 hover:bg-blue-700 text-white py-3 rounded-xl font-medium shadow-lg"
+                >
+                  PIN de Asistencia
+                </button>
+
+                <button
+                  onClick={onScanClick}
+                  className="w-full mt-3 bg-blue-600 hover:bg-blue-700 text-white font-semibold py-3 rounded-xl flex items-center justify-center gap-2"
+                >
+                  <QrCode className="w-5 h-5" />
+                  Escanear QR
+                </button>
+              </>
             )}
           </div>
 
@@ -395,22 +455,21 @@ function SubjectDetail({ subject, onBack }: { subject: Subject; onBack: () => vo
                   'Cargar Lista'
                 )}
               </button>
-              
+
               {/* Nuevo bloque de mensajes visuales */}
               {uploadMessage.text && (
-                <motion.div 
+                <motion.div
                   initial={{ opacity: 0, y: -10 }}
                   animate={{ opacity: 1, y: 0 }}
-                  className={`p-3 rounded-xl flex items-start gap-2 text-sm border ${
-                    uploadMessage.type === 'success' ? 'bg-green-50 text-green-700 border-green-200' : 'bg-red-50 text-red-700 border-red-200'
-                  }`}
+                  className={`p-3 rounded-xl flex items-start gap-2 text-sm border ${uploadMessage.type === 'success' ? 'bg-green-50 text-green-700 border-green-200' : 'bg-red-50 text-red-700 border-red-200'
+                    }`}
                 >
                   {uploadMessage.type === 'success' ? <CheckCircle className="w-5 h-5 shrink-0" /> : <AlertCircle className="w-5 h-5 shrink-0" />}
                   <p className="font-medium mt-0.5">{uploadMessage.text}</p>
                 </motion.div>
               )}
-              
-              
+
+
             </div>
           </div>
 
@@ -453,12 +512,11 @@ function SubjectDetail({ subject, onBack }: { subject: Subject; onBack: () => vo
 
               {/* Mensaje visual para el modo manual */}
               {manualMessage.text && (
-                <motion.div 
+                <motion.div
                   initial={{ opacity: 0, scale: 0.95 }}
                   animate={{ opacity: 1, scale: 1 }}
-                  className={`p-2 mt-2 rounded-lg text-xs text-center font-medium ${
-                    manualMessage.type === 'success' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'
-                  }`}
+                  className={`p-2 mt-2 rounded-lg text-xs text-center font-medium ${manualMessage.type === 'success' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'
+                    }`}
                 >
                   {manualMessage.text}
                 </motion.div>
@@ -474,7 +532,7 @@ function SubjectDetail({ subject, onBack }: { subject: Subject; onBack: () => vo
               <CheckSquare className="w-5 h-5 text-blue-600" />
               Lista de Asistencia
             </h3>
-            <select 
+            <select
               className="bg-slate-50 border border-slate-200 rounded-lg px-4 py-2 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100 transition-all w-full sm:w-auto"
               value={selectedSessionId || ''}
               onChange={(e) => setSelectedSessionId(Number(e.target.value))}
@@ -484,13 +542,13 @@ function SubjectDetail({ subject, onBack }: { subject: Subject; onBack: () => vo
               ) : (
                 sessions.map(s => (
                   <option key={s.id} value={s.id}>
-                    Sesión: {new Date(s.created_at).toLocaleDateString()} - {new Date(s.created_at).toLocaleTimeString().slice(0,5)}
+                    Sesión: {new Date(s.created_at).toLocaleDateString()} - {new Date(s.created_at).toLocaleTimeString().slice(0, 5)}
                   </option>
                 ))
               )}
             </select>
           </div>
-          
+
           <div className="overflow-x-auto">
             <table className="w-full text-left">
               <thead className="bg-slate-50 text-slate-500 text-xs uppercase tracking-wider">
@@ -505,26 +563,24 @@ function SubjectDetail({ subject, onBack }: { subject: Subject; onBack: () => vo
                 {allStudents.map((student) => {
                   const record = records.find(r => r.student_id === student.id);
                   const isPresent = record?.status === 'present';
-                  
+
                   return (
                     <tr key={student.id} className="hover:bg-slate-50 transition-colors">
                       <td className="px-6 py-4 text-sm font-mono text-slate-600">{student.matricula || 'N/A'}</td>
                       <td className="px-6 py-4 text-sm font-medium text-slate-900">{student.name}</td>
                       <td className="px-6 py-4 text-center">
-                        <span className={`inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold ${
-                          isPresent ? 'bg-green-100 text-green-700 border border-green-200' : 'bg-red-100 text-red-700 border border-red-200'
-                        }`}>
+                        <span className={`inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold ${isPresent ? 'bg-green-100 text-green-700 border border-green-200' : 'bg-red-100 text-red-700 border border-red-200'
+                          }`}>
                           {isPresent ? 'Presente' : 'Ausente'}
                         </span>
                       </td>
                       <td className="px-6 py-4 text-right">
                         <button
                           onClick={() => toggleAttendance(student.id, isPresent ? 'present' : 'absent')}
-                          className={`text-xs font-semibold px-4 py-1.5 rounded-lg border transition-colors ${
-                            isPresent 
-                              ? 'border-red-200 text-red-600 hover:bg-red-50' 
-                              : 'border-green-200 text-green-600 hover:bg-green-50'
-                          }`}
+                          className={`text-xs font-semibold px-4 py-1.5 rounded-lg border transition-colors ${isPresent
+                            ? 'border-red-200 text-red-600 hover:bg-red-50'
+                            : 'border-green-200 text-green-600 hover:bg-green-50'
+                            }`}
                         >
                           Marcar {isPresent ? 'Ausente' : 'Presente'}
                         </button>
