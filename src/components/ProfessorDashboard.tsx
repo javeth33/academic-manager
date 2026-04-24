@@ -147,8 +147,31 @@ export default function ProfessorDashboard({ user }: ProfessorDashboardProps) {
             </div>
 
             <QRScanner
-              onScan={(matricula) => {
-                setLastScan(matricula);
+              onScan={async (matricula) => {
+                try {
+                  const response = await fetch("/api/attendance/validate-qr", {
+                    method: "POST",
+                    headers: {
+                      "Content-Type": "application/json",
+                    },
+                    body: JSON.stringify({
+                      matricula,
+                      materia_id: scannerSubject.id,
+                    }),
+                  });
+
+                  const result = await response.json();
+
+                  if (!result.success) {
+                    setLastScan(`❌ ${result.message}`);
+                    return;
+                  }
+
+                  setLastScan(`✅ ${result.alumno.nombre} validado`);
+                } catch (error) {
+                  console.error(error);
+                  setLastScan("❌ Error al validar el QR");
+                }
               }}
             />
           </div>

@@ -397,6 +397,63 @@ async function startServer() {
     }
     res.json({ success: true });
   });
+  // Validar QR escaneado contra alumnos inscritos en la materia
+  app.post("/api/attendance/validate-qr", async (req, res) => {
+    try {
+      const { matricula, materia_id } = req.body;
+      console.log("VALIDANDO QR:", {
+        matricula,
+        matricula_limpia: String(matricula).trim(),
+        materia_id,
+      });
+
+      if (!matricula || !materia_id) {
+        return res.status(400).json({
+          success: false,
+          message: "Faltan datos para validar el QR.",
+        });
+      }
+
+      const { data: alumno } = await supabase
+        .from("usuarios")
+        .select("id, nombre, correo, matricula, rol")
+        .eq("matricula", String(matricula).trim())
+        .single();
+
+      if (!alumno) {
+        return res.status(404).json({
+          success: false,
+          message: "La matrícula no pertenece a ningún alumno.",
+        });
+      }
+
+      const { data: inscripcion } = await supabase
+        .from("inscripciones")
+        .select("*")
+        .eq("materia_id", materia_id)
+        .eq("alumno_id", alumno.id)
+        .single();
+
+      if (!inscripcion) {
+        return res.status(403).json({
+          success: false,
+          message: "El alumno no está inscrito en esta materia.",
+        });
+      }
+
+      return res.json({
+        success: true,
+        message: "Alumno validado correctamente.",
+        alumno,
+      });
+    } catch (error) {
+      console.error("Error al validar QR:", error);
+      return res.status(500).json({
+        success: false,
+        message: "Error interno al validar el QR.",
+      });
+    }
+  });
 
   // --- RUTAS DEL ESTUDIANTE ---
 
