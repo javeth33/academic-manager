@@ -315,6 +315,7 @@ function SubjectDetail({
       if (data.success) {
         setManualMessage({ text: 'Alumno agregado exitosamente', type: 'success' });
         setManualStudent({ matricula: '', email: '', name: '' });
+        fetchAttendanceList();
         if (selectedSessionId) fetchRecords(selectedSessionId);
       } else {
         setManualMessage({ text: 'Error al agregar alumno: ' + data.message, type: 'error' });
@@ -379,6 +380,7 @@ function SubjectDetail({
         if (data.success) {
           setUploadMessage({ text: `¡${students.length} estudiantes procesados con éxito!`, type: 'success' });
           setStudentFile(null);
+          fetchAttendanceList();
           if (selectedSessionId) fetchRecords(selectedSessionId);
         } else {
           setUploadMessage({ text: 'Hubo un error al procesar la lista en el servidor.', type: 'error' });
