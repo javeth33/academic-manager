@@ -21,6 +21,7 @@ export default function ProfessorDashboard({ user }: ProfessorDashboardProps) {
   const [loading, setLoading] = useState(true);
   const [scannerSubject, setScannerSubject] = useState<Subject | null>(null);
   const [lastScan, setLastScan] = useState<string | null>(null);
+  const [attendanceRefreshKey, setAttendanceRefreshKey] = useState(0);
   const playSound = (type: "success" | "error" | "warning") => {
     const soundMap = {
       success: "/public/success.mp3",
@@ -62,6 +63,7 @@ export default function ProfessorDashboard({ user }: ProfessorDashboardProps) {
           subject={selectedSubject}
           onBack={() => setSelectedSubject(null)}
           onScanClick={() => setScannerSubject(selectedSubject)}
+          refreshKey={attendanceRefreshKey}
         />
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
@@ -185,6 +187,7 @@ export default function ProfessorDashboard({ user }: ProfessorDashboardProps) {
 
                   playSound("success");
                   setLastScan(`✅ ${result.alumno.nombre} validado`);
+                  setAttendanceRefreshKey((prev) => prev + 1);
                 } catch (error) {
                   console.error(error);
                   playSound("error");
@@ -205,9 +208,35 @@ export default function ProfessorDashboard({ user }: ProfessorDashboardProps) {
   );
 }
 
-function SubjectDetail({ subject, onBack, onScanClick }: { subject: Subject; onBack: () => void; onScanClick: () => void; }) {
+function SubjectDetail({
+  subject,
+  onBack,
+  onScanClick,
+  refreshKey,
+}: {
+  subject: Subject;
+  onBack: () => void;
+  onScanClick: () => void;
+  refreshKey: number;
+}) {
   const [token, setToken] = useState<string | null>(null);
   const [expiresAt, setExpiresAt] = useState<string | null>(null);
+  const [attendanceStudents, setAttendanceStudents] = useState<any[]>([]);
+  const fetchAttendanceList = async () => {
+    try {
+      const response = await fetch(`/api/professor/subject/${subject.id}/attendance-list`);
+      const result = await response.json();
+
+      if (result.success) {
+        setAttendanceStudents(result.students);
+      }
+    } catch (error) {
+      console.error("Error al cargar lista de asistencia:", error);
+    }
+  };
+ useEffect(() => {
+  fetchAttendanceList();
+}, [subject.id, refreshKey]);
 
   // --- ESTADOS DE LA CARGA MASIVA ---
   const [studentFile, setStudentFile] = useState<File | null>(null);
@@ -597,44 +626,36 @@ function SubjectDetail({ subject, onBack, onScanClick }: { subject: Subject; onB
                   <th className="px-6 py-4 font-semibold">Matrícula</th>
                   <th className="px-6 py-4 font-semibold">Nombre</th>
                   <th className="px-6 py-4 font-semibold text-center">Estado</th>
-                  <th className="px-6 py-4 font-semibold text-right">Acción</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
-                {allStudents.map((student) => {
-                  const record = records.find(r => r.student_id === student.id);
-                  const isPresent = record?.status === 'present';
+                {attendanceStudents.map((student) => (
+                  <tr key={student.id} className="hover:bg-slate-50">
+                    <td className="px-6 py-4 text-sm font-mono text-slate-600">
+                      {student.matricula || "N/A"}
+                    </td>
 
-                  return (
-                    <tr key={student.id} className="hover:bg-slate-50 transition-colors">
-                      <td className="px-6 py-4 text-sm font-mono text-slate-600">{student.matricula || 'N/A'}</td>
-                      <td className="px-6 py-4 text-sm font-medium text-slate-900">{student.name}</td>
-                      <td className="px-6 py-4 text-center">
-                        <span className={`inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold ${isPresent ? 'bg-green-100 text-green-700 border border-green-200' : 'bg-red-100 text-red-700 border border-red-200'
-                          }`}>
-                          {isPresent ? 'Presente' : 'Ausente'}
-                        </span>
-                      </td>
-                      <td className="px-6 py-4 text-right">
-                        <button
-                          onClick={() => toggleAttendance(student.id, isPresent ? 'present' : 'absent')}
-                          className={`text-xs font-semibold px-4 py-1.5 rounded-lg border transition-colors ${isPresent
-                            ? 'border-red-200 text-red-600 hover:bg-red-50'
-                            : 'border-green-200 text-green-600 hover:bg-green-50'
-                            }`}
-                        >
-                          Marcar {isPresent ? 'Ausente' : 'Presente'}
-                        </button>
-                      </td>
-                    </tr>
-                  );
-                })}
-                {allStudents.length === 0 && (
+                    <td className="px-6 py-4 text-sm font-medium text-slate-900">
+                      {student.nombre}
+                    </td>
+
+                    <td className="px-6 py-4 text-center">
+                      <span
+                        className={`inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold ${student.estado === "presente"
+                          ? "bg-green-50 text-green-700 border border-green-200"
+                          : "bg-yellow-50 text-yellow-700 border border-yellow-200"
+                          }`}
+                      >
+                        {student.estado === "presente" ? "✅ Presente" : "⏳ Pendiente"}
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+
+                {attendanceStudents.length === 0 && (
                   <tr>
-                    <td colSpan={4} className="px-6 py-12 text-center text-slate-500 bg-slate-50/50">
-                      <Users className="w-8 h-8 text-slate-300 mx-auto mb-3" />
-                      <p>No hay alumnos inscritos aún en esta materia.</p>
-                      <p className="text-sm mt-1">Utiliza el panel izquierdo para agregar estudiantes.</p>
+                    <td colSpan={3} className="px-6 py-12 text-center text-slate-400">
+                      No hay alumnos inscritos aún en esta materia.
                     </td>
                   </tr>
                 )}
