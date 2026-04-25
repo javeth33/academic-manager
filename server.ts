@@ -440,6 +440,32 @@ async function startServer() {
           message: "El alumno no está inscrito en esta materia.",
         });
       }
+      const hoy = new Date().toLocaleDateString("en-CA", {
+        timeZone: "America/Mexico_City",
+      });
+
+      const { data: asistenciaExistente, error: errorDuplicado } = await supabase
+        .from("registros_asistencia")
+        .select("*")
+        .eq("materia_id", Number(materia_id))
+        .eq("alumno_id", Number(alumno.id))
+        .eq("fecha", hoy)
+        .maybeSingle();
+
+      console.log("DUPLICADO BUSCADO:", {
+        materia_id: Number(materia_id),
+        alumno_id: Number(alumno.id),
+        fecha: hoy,
+        encontrado: asistenciaExistente,
+        error: errorDuplicado,
+      });
+
+      if (asistenciaExistente) {
+        return res.status(409).json({
+          success: false,
+          message: "Este alumno ya registró asistencia hoy en esta materia.",
+        });
+      }
 
       return res.json({
         success: true,
