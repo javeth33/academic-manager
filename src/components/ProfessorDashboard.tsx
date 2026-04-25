@@ -21,6 +21,16 @@ export default function ProfessorDashboard({ user }: ProfessorDashboardProps) {
   const [loading, setLoading] = useState(true);
   const [scannerSubject, setScannerSubject] = useState<Subject | null>(null);
   const [lastScan, setLastScan] = useState<string | null>(null);
+  const playSound = (type: "success" | "error" | "warning") => {
+    const soundMap = {
+      success: "/public/success.mp3",
+      error: "/public/error.mp3",
+      warning: "/public/warning.mp3",
+    };
+
+    const audio = new Audio(soundMap[type]);
+    audio.play().catch(() => { });
+  };
 
   useEffect(() => {
     fetchSubjects();
@@ -163,13 +173,21 @@ export default function ProfessorDashboard({ user }: ProfessorDashboardProps) {
                   const result = await response.json();
 
                   if (!result.success) {
+                    if (response.status === 409) {
+                      playSound("warning");
+                    } else {
+                      playSound("error");
+                    }
+
                     setLastScan(`❌ ${result.message}`);
                     return;
                   }
 
+                  playSound("success");
                   setLastScan(`✅ ${result.alumno.nombre} validado`);
                 } catch (error) {
                   console.error(error);
+                  playSound("error");
                   setLastScan("❌ Error al validar el QR");
                 }
               }}
