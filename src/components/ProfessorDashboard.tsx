@@ -20,7 +20,10 @@ export default function ProfessorDashboard({ user }: ProfessorDashboardProps) {
   const [selectedSubject, setSelectedSubject] = useState<Subject | null>(null);
   const [loading, setLoading] = useState(true);
   const [scannerSubject, setScannerSubject] = useState<Subject | null>(null);
-  const [lastScan, setLastScan] = useState<string | null>(null);
+  const [lastScan, setLastScan] = useState<{
+    text: string;
+    type: "success" | "error" | "warning" | "closed";
+  } | null>(null);
   const [attendanceRefreshKey, setAttendanceRefreshKey] = useState(0);
   const playSound = (type: "success" | "error" | "warning") => {
     const soundMap = {
@@ -175,23 +178,46 @@ export default function ProfessorDashboard({ user }: ProfessorDashboardProps) {
                   const result = await response.json();
 
                   if (!result.success) {
-                    if (response.status === 409) {
-                      playSound("warning");
-                    } else {
+                    if (result.type === "closed") {
                       playSound("error");
+                      setLastScan({
+                        text: `🔒 ${result.message}`,
+                        type: "closed",
+                      });
+                      return;
                     }
 
-                    setLastScan(`❌ ${result.message}`);
+                    if (response.status === 409) {
+                      playSound("warning");
+                      setLastScan({
+                        text: `⚠️ ${result.message}`,
+                        type: "warning",
+                      });
+                      return;
+                    }
+
+                    playSound("error");
+                    setLastScan({
+                      text: `❌ ${result.message}`,
+                      type: "error",
+                    });
                     return;
                   }
 
                   playSound("success");
-                  setLastScan(`✅ ${result.alumno.nombre} validado`);
+                  setLastScan({
+                    text: `✅ ${result.alumno.nombre} validado`,
+                    type: "success",
+                  });
+
                   setAttendanceRefreshKey((prev) => prev + 1);
                 } catch (error) {
                   console.error(error);
                   playSound("error");
-                  setLastScan("❌ Error al validar el QR");
+                  setLastScan({
+                    text: "❌ Error al validar el QR",
+                    type: "error",
+                  });
                 }
               }}
             />
@@ -200,9 +226,20 @@ export default function ProfessorDashboard({ user }: ProfessorDashboardProps) {
       )}
 
       {lastScan && (
-        <div className="fixed bottom-6 right-6 bg-green-600 text-white px-5 py-3 rounded-xl shadow-lg z-50">
-          Matrícula escaneada: {lastScan}
-        </div>
+        <motion.div
+          initial={{ opacity: 0, y: 20, scale: 0.95 }}
+          animate={{ opacity: 1, y: 0, scale: 1 }}
+          className={`fixed bottom-6 right-6 text-white px-5 py-3 rounded-xl shadow-lg z-50 max-w-sm flex items-center gap-2 ${lastScan.type === "success"
+              ? "bg-green-600"
+              : lastScan.type === "warning"
+                ? "bg-yellow-600"
+                : lastScan.type === "closed"
+                  ? "bg-slate-800"
+                  : "bg-red-600"
+            }`}
+        >
+          <span>{lastScan.text}</span>
+        </motion.div>
       )}
     </div>
   );
@@ -234,9 +271,35 @@ function SubjectDetail({
       console.error("Error al cargar lista de asistencia:", error);
     }
   };
- useEffect(() => {
-  fetchAttendanceList();
-}, [subject.id, refreshKey]);
+  useEffect(() => {
+    fetchAttendanceList();
+  }, [subject.id, refreshKey]);
+  const closeAttendance = async () => {
+    const confirmClose = confirm("¿Seguro que quieres cerrar la asistencia? Los pendientes pasarán a No asistió.");
+
+    if (!confirmClose) return;
+
+    const response = await fetch("/api/attendance/close", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        materia_id: subject.id,
+      }),
+    });
+
+    const result = await response.json();
+
+    if (result.success) {
+      alert("Asistencia cerrada correctamente.");
+      fetchAttendanceList();
+    } else {
+      alert(result.message || "Error al cerrar asistencia.");
+    }
+  };
+
+
 
   // --- ESTADOS DE LA CARGA MASIVA ---
   const [studentFile, setStudentFile] = useState<File | null>(null);
@@ -603,6 +666,12 @@ function SubjectDetail({
             <h3 className="font-bold text-slate-800 flex items-center gap-2">
               <CheckSquare className="w-5 h-5 text-blue-600" />
               Lista de Asistencia
+              <button
+                onClick={closeAttendance}
+                className="bg-red-600 hover:bg-red-700 text-white text-sm font-semibold px-4 py-2 rounded-xl"
+              >
+                Cerrar asistencia
+              </button>
             </h3>
             <select
               className="bg-slate-50 border border-slate-200 rounded-lg px-4 py-2 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100 transition-all w-full sm:w-auto"
@@ -645,10 +714,16 @@ function SubjectDetail({
                       <span
                         className={`inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold ${student.estado === "presente"
                           ? "bg-green-50 text-green-700 border border-green-200"
-                          : "bg-yellow-50 text-yellow-700 border border-yellow-200"
+                          : student.estado === "no_asistio"
+                            ? "bg-red-50 text-red-700 border border-red-200"
+                            : "bg-yellow-50 text-yellow-700 border border-yellow-200"
                           }`}
                       >
-                        {student.estado === "presente" ? "✅ Presente" : "⏳ Pendiente"}
+                        {student.estado === "presente"
+                          ? "✅ Presente"
+                          : student.estado === "no_asistio"
+                            ? "❌ No asistió"
+                            : "⏳ Pendiente"}
                       </span>
                     </td>
                   </tr>

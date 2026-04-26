@@ -174,6 +174,7 @@ async function startServer() {
         name: user.nombre,
         email: user.correo,
         role: user.rol,
+        matricula: user.matricula,
       },
     });
   });
@@ -461,9 +462,26 @@ async function startServer() {
       });
 
       if (asistenciaExistente) {
+        if (asistenciaExistente.estado === "no_asistio") {
+          return res.status(409).json({
+            success: false,
+            message: "La asistencia de esta clase ya fue cerrada.",
+            type: "closed",
+          });
+        }
+
+        if (asistenciaExistente.estado === "presente") {
+          return res.status(409).json({
+            success: false,
+            message: "Este alumno ya registró asistencia hoy en esta materia.",
+            type: "duplicate",
+          });
+        }
+
         return res.status(409).json({
           success: false,
-          message: "Este alumno ya registró asistencia hoy en esta materia.",
+          message: "Este alumno ya tiene un registro de asistencia para hoy.",
+          type: "registered",
         });
       }
       let { data: sesion } = await supabase
@@ -588,6 +606,7 @@ async function startServer() {
     }
   });
 
+
   // --- RUTAS DEL ESTUDIANTE ---
 
   // Obtener materias inscritas por el estudiante
@@ -666,6 +685,99 @@ async function startServer() {
     if (error)
       return res.status(500).json({ success: false, message: error.message });
     res.json({ success: true, message: "Asistencia registrada correctamente" });
+  });
+  app.post("/api/attendance/close", async (req, res) => {
+    try {
+      const { materia_id } = req.body;
+
+      if (!materia_id) {
+        return res.status(400).json({
+          success: false,
+          message: "Falta la materia.",
+        });
+      }
+
+      const hoy = new Date().toLocaleDateString("en-CA", {
+        timeZone: "America/Mexico_City",
+      });
+
+      const { data: inscritos } = await supabase
+        .from("inscripciones")
+        .select("alumno_id")
+        .eq("materia_id", Number(materia_id))
+        .not("alumno_id", "is", null);
+
+      const { data: asistenciasHoy } = await supabase
+        .from("registros_asistencia")
+        .select("alumno_id")
+        .eq("materia_id", Number(materia_id))
+        .eq("fecha", hoy);
+
+      const presentes = new Set(
+        asistenciasHoy?.map((a) => Number(a.alumno_id)) || []
+      );
+
+      const pendientes =
+        inscritos?.filter((i) => !presentes.has(Number(i.alumno_id))) || [];
+
+      if (pendientes.length === 0) {
+        return res.json({
+          success: true,
+          message: "No hay alumnos pendientes.",
+        });
+      }
+
+      let { data: sesion } = await supabase
+        .from("sesiones_asistencia")
+        .select("*")
+        .eq("materia_id", Number(materia_id))
+        .eq("token", `QR-${materia_id}-${hoy}`)
+        .maybeSingle();
+
+      if (!sesion) {
+        const { data: nuevaSesion } = await supabase
+          .from("sesiones_asistencia")
+          .insert({
+            materia_id: Number(materia_id),
+            token: `QR-${materia_id}-${hoy}`,
+            fecha_expiracion: new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString(),
+          })
+          .select()
+          .single();
+
+        sesion = nuevaSesion;
+      }
+
+      const ausentes = pendientes.map((p) => ({
+        sesion_id: sesion.id,
+        alumno_id: p.alumno_id,
+        materia_id: Number(materia_id),
+        fecha: hoy,
+        estado: "no_asistio",
+      }));
+
+      const { error } = await supabase
+        .from("registros_asistencia")
+        .insert(ausentes);
+
+      if (error) {
+        return res.status(500).json({
+          success: false,
+          message: error.message,
+        });
+      }
+
+      return res.json({
+        success: true,
+        message: "Asistencia cerrada correctamente.",
+      });
+    } catch (error) {
+      console.error("Error al cerrar asistencia:", error);
+      return res.status(500).json({
+        success: false,
+        message: "Error interno al cerrar asistencia.",
+      });
+    }
   });
 
   // --- MIDDLEWARE DE VITE (No tocar) ---
