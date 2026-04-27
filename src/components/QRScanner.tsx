@@ -1,5 +1,5 @@
-import { useEffect, useRef } from 'react';
-import { Html5Qrcode } from 'html5-qrcode';
+import { useEffect, useRef, useState } from "react";
+import { Html5Qrcode } from "html5-qrcode";
 
 interface QRScannerProps {
   onScan: (decodedText: string) => void;
@@ -8,35 +8,66 @@ interface QRScannerProps {
 export default function QRScanner({ onScan }: QRScannerProps) {
   const scannerRef = useRef<Html5Qrcode | null>(null);
   const runningRef = useRef(false);
-  const lastScanRef = useRef('');
-  const readerIdRef = useRef(`qr-reader-${crypto.randomUUID()}`);
+  const lastScanRef = useRef("");
+
+  // Evitamos crypto.randomUUID porque puede fallar en celular por HTTP
+  const readerIdRef = useRef(
+    `qr-reader-${Date.now()}-${Math.floor(Math.random() * 100000)}`
+  );
+
+  const [cameraError, setCameraError] = useState("");
 
   useEffect(() => {
     let cancelled = false;
 
     const startScanner = async () => {
       try {
+        setCameraError("");
+
         const scanner = new Html5Qrcode(readerIdRef.current);
         scannerRef.current = scanner;
 
-        await scanner.start(
-          { facingMode: 'user' },
-          {
-            fps: 10,
-            qrbox: { width: 220, height: 220 },
-          },
-          (decodedText) => {
-            if (decodedText === lastScanRef.current) return;
+        try {
+          await scanner.start(
+            { facingMode: "environment" },
+            {
+              fps: 10,
+              qrbox: { width: 220, height: 220 },
+              aspectRatio: 1.0,
+            },
+            (decodedText) => {
+              if (decodedText === lastScanRef.current) return;
 
-            lastScanRef.current = decodedText;
-            onScan(decodedText);
+              lastScanRef.current = decodedText;
+              onScan(decodedText);
 
-            setTimeout(() => {
-              lastScanRef.current = '';
-            }, 2000);
-          },
-          () => {}
-        );
+              setTimeout(() => {
+                lastScanRef.current = "";
+              }, 2000);
+            },
+            () => { }
+          );
+        } catch {
+          await scanner.start(
+            { facingMode: "user" },
+            {
+              fps: 10,
+              qrbox: { width: 220, height: 220 },
+              aspectRatio: 1.0,
+            },
+            (decodedText) => {
+              if (decodedText === lastScanRef.current) return;
+
+              lastScanRef.current = decodedText;
+              onScan(decodedText);
+
+              setTimeout(() => {
+                lastScanRef.current = "";
+              }, 2000);
+            },
+            () => { }
+          );
+        }
 
         if (!cancelled) {
           runningRef.current = true;
@@ -45,7 +76,9 @@ export default function QRScanner({ onScan }: QRScannerProps) {
           scanner.clear();
         }
       } catch (error) {
-        console.error('Error al iniciar cámara:', error);
+        console.error("Error al iniciar cámara:", error);
+
+       
       }
     };
 
@@ -63,7 +96,7 @@ export default function QRScanner({ onScan }: QRScannerProps) {
             runningRef.current = false;
             scanner.clear();
           })
-          .catch(() => {});
+          .catch(() => { });
       }
     };
   }, [onScan]);
@@ -74,6 +107,9 @@ export default function QRScanner({ onScan }: QRScannerProps) {
         id={readerIdRef.current}
         className="w-[300px] min-h-[300px] rounded-xl overflow-hidden border border-blue-100 bg-black"
       />
+      
+
+
 
       <p className="text-xs text-slate-500 text-center">
         Coloca el código QR dentro del recuadro.
