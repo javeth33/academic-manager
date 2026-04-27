@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { BookOpen, Clock, MapPin, CheckCircle, QrCode } from 'lucide-react';
+import { Clock, MapPin, QrCode, CheckCircle } from 'lucide-react';
 import { motion } from 'motion/react';
 import StudentQR from './StudentQR';
 
@@ -7,6 +7,8 @@ import StudentQR from './StudentQR';
 interface StudentDashboardProps {
   user: any;
 }
+
+const SHOW_TOKEN_FLOW = false;
 
 export default function StudentDashboard({ user }: StudentDashboardProps) {
   const [subjects, setSubjects] = useState<any[]>([]);
@@ -62,40 +64,40 @@ export default function StudentDashboard({ user }: StudentDashboardProps) {
         {/* Left: Attendance Form */}
         <div className="md:col-span-1">
           <div className="bg-white p-6 rounded-2xl shadow-lg shadow-blue-100 border border-blue-100 sticky top-8">
-            <h3 className="text-xl font-bold text-blue-900 mb-4 flex items-center gap-2">
-              <CheckCircle className="w-6 h-6 text-blue-500" />
-              Marcar Asistencia
-            </h3>
-            <p className="text-sm text-slate-500 mb-6">
-              Ingresa el token de 6 caracteres proporcionado por tu profesor.
-            </p>
-            <form onSubmit={handleAttendance} className="space-y-4">
-              <input
-                type="text"
-                value={token}
-                onChange={(e) => setToken(e.target.value.toUpperCase())}
-                placeholder="TOKEN"
-                maxLength={6}
-                className="w-full text-center text-2xl font-mono tracking-widest p-3 rounded-xl border border-blue-200 focus:border-blue-500 focus:ring-2 focus:ring-blue-100 outline-none uppercase"
-              />
-              <button
-                type="submit"
-                disabled={!token}
-                className="w-full bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white font-semibold py-3 rounded-xl shadow-lg shadow-blue-200 transition-all"
-              >
-                Registrar
-              </button>
-            </form>
-            {message && (
-              <div className={`mt-4 p-3 rounded-lg text-sm text-center ${message.includes('Éxito') ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-700'}`}>
-                {message}
+            {SHOW_TOKEN_FLOW && (
+              <>
+                <h3 className="text-xl font-bold text-blue-900 mb-4 flex items-center gap-2">
+                  <CheckCircle className="w-6 h-6 text-blue-500" />
+                  Marcar Asistencia
+                </h3>
+                <p className="text-sm text-slate-500 mb-6">
+                  Ingresa el token de 6 caracteres proporcionado por tu profesor.
+                </p>
+                <form onSubmit={handleAttendance} className="space-y-4">
+                  <input
+                    type="text"
+                    value={token}
+                    onChange={(e) => setToken(e.target.value.toUpperCase())}
+                    placeholder="TOKEN"
+                    maxLength={6}
+                    className="w-full text-center text-2xl font-mono tracking-widest p-3 rounded-xl border border-blue-200 focus:border-blue-500 focus:ring-2 focus:ring-blue-100 outline-none uppercase"
+                  />
+                  <button
+                    type="submit"
+                    disabled={!token}
+                    className="w-full bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white font-semibold py-3 rounded-xl shadow-lg shadow-blue-200 transition-all"
+                  >
+                    Registrar
+                  </button>
+                </form>
+                {message && (
+                  <div className={`mt-4 p-3 rounded-lg text-sm text-center ${message.includes('Éxito') ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-700'}`}>
+                    {message}
 
-              </div>
-            )}
-            {message && (
-              <div className={`mt-4 p-3 rounded-lg text-sm text-center ${message.includes('Éxito') ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-700'}`}>
-                {message}
-              </div>
+                  </div>
+                )}
+                
+              </>
             )}
 
             <div className="bg-white p-6 rounded-2xl shadow-lg shadow-blue-100 border border-blue-100 mt-6">

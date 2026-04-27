@@ -15,6 +15,8 @@ interface ProfessorDashboardProps {
   user: any;
 }
 
+const SHOW_TOKEN_FLOW = false;
+
 export default function ProfessorDashboard({ user }: ProfessorDashboardProps) {
   const [subjects, setSubjects] = useState<Subject[]>([]);
   const [selectedSubject, setSelectedSubject] = useState<Subject | null>(null);
@@ -110,7 +112,6 @@ export default function ProfessorDashboard({ user }: ProfessorDashboardProps) {
                       ))}
                     </div>
                   </div>
-
                   <div>
                     <div className="flex items-center gap-2 text-slate-700 font-medium mb-1.5">
                       <MapPin className="w-4 h-4 text-blue-500" /> Salones
@@ -230,12 +231,12 @@ export default function ProfessorDashboard({ user }: ProfessorDashboardProps) {
           initial={{ opacity: 0, y: 20, scale: 0.95 }}
           animate={{ opacity: 1, y: 0, scale: 1 }}
           className={`fixed bottom-6 right-6 text-white px-5 py-3 rounded-xl shadow-lg z-50 max-w-sm flex items-center gap-2 ${lastScan.type === "success"
-              ? "bg-green-600"
-              : lastScan.type === "warning"
-                ? "bg-yellow-600"
-                : lastScan.type === "closed"
-                  ? "bg-slate-800"
-                  : "bg-red-600"
+            ? "bg-green-600"
+            : lastScan.type === "warning"
+              ? "bg-yellow-600"
+              : lastScan.type === "closed"
+                ? "bg-slate-800"
+                : "bg-red-600"
             }`}
         >
           <span>{lastScan.text}</span>
@@ -529,9 +530,11 @@ function SubjectDetail({
               <Clock className="w-5 h-5 text-blue-600" />
               Asistencia en Vivo
             </h3>
-            {token ? (
+            {SHOW_TOKEN_FLOW && token && (
               <div className="text-center py-6 bg-blue-50 rounded-xl border border-blue-200">
-                <p className="text-sm text-blue-600 mb-2">Comparte este código con los alumnos</p>
+                <p className="text-sm text-blue-600 mb-2">
+                  Comparte este código con los alumnos
+                </p>
                 <div className="text-4xl font-mono font-bold text-blue-900 tracking-widest mb-2">
                   {token}
                 </div>
@@ -539,24 +542,26 @@ function SubjectDetail({
                   Expira a las {new Date(expiresAt!).toLocaleTimeString()}
                 </p>
               </div>
-            ) : (
-              <>
-                <button
-                  onClick={generateToken}
-                  className="w-full bg-blue-600 hover:bg-blue-700 text-white py-3 rounded-xl font-medium shadow-lg"
-                >
-                  PIN de Asistencia
-                </button>
-
-                <button
-                  onClick={onScanClick}
-                  className="w-full mt-3 bg-blue-600 hover:bg-blue-700 text-white font-semibold py-3 rounded-xl flex items-center justify-center gap-2"
-                >
-                  <QrCode className="w-5 h-5" />
-                  Escanear QR
-                </button>
-              </>
             )}
+
+            {SHOW_TOKEN_FLOW && !token && (
+              <button
+                onClick={generateToken}
+                className="w-full bg-blue-600 hover:bg-blue-700 text-white py-3 rounded-xl font-medium shadow-lg"
+              >
+                PIN de Asistencia
+              </button>
+            )}
+
+            <button
+              onClick={onScanClick}
+              className="w-full mt-3 bg-blue-600 hover:bg-blue-700 text-white font-semibold py-3 rounded-xl flex items-center justify-center gap-2"
+            >
+              <QrCode className="w-5 h-5" />
+              Escanear QR
+            </button>
+
+
           </div>
 
           {/* TARJETA MEJORADA: IMPORTAR ALUMNOS */}
@@ -720,15 +725,14 @@ function SubjectDetail({
                           }`}
                       >
                         {student.estado === "presente"
-                          ? "✅ Presente"
+                          ? "Presente"
                           : student.estado === "no_asistio"
-                            ? "❌ No asistió"
-                            : "⏳ Pendiente"}
+                            ? "No asistió"
+                            : " Pendiente"}
                       </span>
                     </td>
                   </tr>
                 ))}
-
                 {attendanceStudents.length === 0 && (
                   <tr>
                     <td colSpan={3} className="px-6 py-12 text-center text-slate-400">

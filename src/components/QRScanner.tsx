@@ -107,9 +107,6 @@ export default function QRScanner({ onScan }: QRScannerProps) {
         id={readerIdRef.current}
         className="w-[300px] min-h-[300px] rounded-xl overflow-hidden border border-blue-100 bg-black"
       />
-      
-
-
 
       <p className="text-xs text-slate-500 text-center">
         Coloca el código QR dentro del recuadro.
