@@ -543,16 +543,20 @@ async function startServer() {
     }
   });
   app.get("/api/professor/subject/:id/attendance-list", async (req, res) => {
-    try {
-      const materia_id = Number(req.params.id);
+  try {
+    const materia_id = Number(req.params.id);
 
-      const hoy = new Date().toLocaleDateString("en-CA", {
-        timeZone: "America/Mexico_City",
-      });
+    const sessionId = req.query.session_id
+      ? Number(req.query.session_id)
+      : null;
 
-      const { data: inscritos, error: inscritosError } = await supabase
-        .from("inscripciones")
-        .select(`
+    const hoy = new Date().toLocaleDateString("en-CA", {
+      timeZone: "America/Mexico_City",
+    });
+
+    const { data: inscritos, error: inscritosError } = await supabase
+      .from("inscripciones")
+      .select(`
         alumno_id,
         usuarios (
           id,
@@ -561,50 +565,66 @@ async function startServer() {
           correo
         )
       `)
-        .eq("materia_id", materia_id)
-        .not("alumno_id", "is", null);
+      .eq("materia_id", materia_id)
+      .not("alumno_id", "is", null);
 
-      if (inscritosError) {
-        return res.status(500).json({
-          success: false,
-          message: inscritosError.message,
-        });
-      }
-
-      const { data: asistencias } = await supabase
-        .from("registros_asistencia")
-        .select("*")
-        .eq("materia_id", materia_id)
-        .eq("fecha", hoy);
-
-      const lista = inscritos?.map((inscripcion: any) => {
-        const alumno = inscripcion.usuarios;
-
-        const asistencia = asistencias?.find(
-          (a: any) => Number(a.alumno_id) === Number(alumno.id)
-        );
-
-        return {
-          id: alumno.id,
-          nombre: alumno.nombre,
-          matricula: alumno.matricula,
-          correo: alumno.correo,
-          estado: asistencia ? asistencia.estado : "pendiente",
-        };
-      });
-
-      return res.json({
-        success: true,
-        students: lista || [],
-      });
-    } catch (error) {
-      console.error("Error al obtener lista de asistencia:", error);
+    if (inscritosError) {
       return res.status(500).json({
         success: false,
-        message: "Error al obtener lista de asistencia.",
+        message: inscritosError.message,
       });
     }
-  });
+
+    let asistenciasQuery = supabase
+      .from("registros_asistencia")
+      .select("*")
+      .eq("materia_id", materia_id);
+
+    if (sessionId) {
+      asistenciasQuery = asistenciasQuery.eq("sesion_id", sessionId);
+    } else {
+      asistenciasQuery = asistenciasQuery.eq("fecha", hoy);
+    }
+
+    const { data: asistencias, error: asistenciasError } =
+      await asistenciasQuery;
+
+    if (asistenciasError) {
+      return res.status(500).json({
+        success: false,
+        message: asistenciasError.message,
+      });
+    }
+
+    const lista = inscritos?.map((inscripcion: any) => {
+      const alumno = inscripcion.usuarios;
+
+      const asistencia = asistencias?.find(
+        (a: any) => Number(a.alumno_id) === Number(alumno.id)
+      );
+
+      return {
+        id: alumno.id,
+        nombre: alumno.nombre,
+        matricula: alumno.matricula,
+        correo: alumno.correo,
+        estado: asistencia ? asistencia.estado : "pendiente",
+      };
+    });
+
+    return res.json({
+      success: true,
+      students: lista || [],
+      session_id: sessionId,
+    });
+  } catch (error) {
+    console.error("Error al obtener lista de asistencia:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Error al obtener lista de asistencia.",
+    });
+  }
+});
 
 
   // --- RUTAS DEL ESTUDIANTE ---

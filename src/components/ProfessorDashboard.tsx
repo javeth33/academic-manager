@@ -260,9 +260,15 @@ function SubjectDetail({
   const [token, setToken] = useState<string | null>(null);
   const [expiresAt, setExpiresAt] = useState<string | null>(null);
   const [attendanceStudents, setAttendanceStudents] = useState<any[]>([]);
-  const fetchAttendanceList = async () => {
+  const [sessions, setSessions] = useState<any[]>([]);
+  const [selectedSessionId, setSelectedSessionId] = useState<number | null>(null);
+  const fetchAttendanceList = async (sessionId?: number | null) => {
     try {
-      const response = await fetch(`/api/professor/subject/${subject.id}/attendance-list`);
+      const url = sessionId
+        ? `/api/professor/subject/${subject.id}/attendance-list?session_id=${sessionId}`
+        : `/api/professor/subject/${subject.id}/attendance-list`;
+
+      const response = await fetch(url);
       const result = await response.json();
 
       if (result.success) {
@@ -273,8 +279,13 @@ function SubjectDetail({
     }
   };
   useEffect(() => {
-    fetchAttendanceList();
-  }, [subject.id, refreshKey]);
+    if (selectedSessionId) {
+      fetchAttendanceList(selectedSessionId);
+    } else {
+      fetchAttendanceList();
+    }
+  }, [subject.id, refreshKey, selectedSessionId]);
+
   const closeAttendance = async () => {
     const confirmClose = confirm("¿Seguro que quieres cerrar la asistencia? Los pendientes pasarán a No asistió.");
 
@@ -301,7 +312,6 @@ function SubjectDetail({
   };
 
 
-
   // --- ESTADOS DE LA CARGA MASIVA ---
   const [studentFile, setStudentFile] = useState<File | null>(null);
   const [isUploadingList, setIsUploadingList] = useState(false);
@@ -314,8 +324,6 @@ function SubjectDetail({
 
   const [records, setRecords] = useState<any[]>([]);
   const [allStudents, setAllStudents] = useState<any[]>([]);
-  const [sessions, setSessions] = useState<any[]>([]);
-  const [selectedSessionId, setSelectedSessionId] = useState<number | null>(null);
 
   useEffect(() => {
     fetchSessions();
@@ -330,12 +338,12 @@ function SubjectDetail({
   const fetchSessions = async () => {
     const res = await fetch(`/api/professor/subject/${subject.id}/attendance`);
     const data = await res.json();
-    setSessions(data.sessions);
-    if (data.sessions.length > 0 && !selectedSessionId) {
-      setSelectedSessionId(data.sessions[0].id);
-    }
-  };
 
+    setSessions(data.sessions || []);
+
+    setSelectedSessionId(null);
+    fetchAttendanceList();
+  };
   const fetchRecords = async (sessionId: number) => {
     const res = await fetch(`/api/professor/session/${sessionId}/records`);
     const data = await res.json();
@@ -470,6 +478,17 @@ function SubjectDetail({
 
     fetchRecords(selectedSessionId);
   };
+  const todayKey = new Date().toLocaleDateString("en-CA", {
+    timeZone: "America/Mexico_City",
+  });
+
+  const historySessions = sessions.filter((session) => {
+    const sessionDateKey = new Date(session.created_at).toLocaleDateString("en-CA", {
+      timeZone: "America/Mexico_City",
+    });
+
+    return sessionDateKey !== todayKey;
+  });
 
   return (
     <div className="space-y-6">
@@ -680,18 +699,31 @@ function SubjectDetail({
             </h3>
             <select
               className="bg-slate-50 border border-slate-200 rounded-lg px-4 py-2 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100 transition-all w-full sm:w-auto"
-              value={selectedSessionId || ''}
-              onChange={(e) => setSelectedSessionId(Number(e.target.value))}
+              value={selectedSessionId || ""}
+              onChange={(e) => {
+                const value = e.target.value ? Number(e.target.value) : null;
+                setSelectedSessionId(value);
+                fetchAttendanceList(value);
+              }}
             >
-              {sessions.length === 0 ? (
-                <option value="">No hay sesiones registradas</option>
-              ) : (
-                sessions.map(s => (
+              <option value="">Asistencia de hoy</option>
+
+              {historySessions.map((s) => {
+                const fecha = new Date(s.created_at);
+
+                return (
                   <option key={s.id} value={s.id}>
-                    Sesión: {new Date(s.created_at).toLocaleDateString()} - {new Date(s.created_at).toLocaleTimeString().slice(0, 5)}
+                    Asistencia del {fecha.toLocaleDateString("es-MX", {
+                      timeZone: "America/Mexico_City",
+                    })} -{" "}
+                    {fecha.toLocaleTimeString("es-MX", {
+                      hour: "2-digit",
+                      minute: "2-digit",
+                      timeZone: "America/Mexico_City",
+                    })}
                   </option>
-                ))
-              )}
+                );
+              })}
             </select>
           </div>
 
