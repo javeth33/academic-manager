@@ -433,7 +433,7 @@ async function startServer() {
         .select("*")
         .eq("materia_id", materia_id)
         .eq("alumno_id", alumno.id)
-        .single();
+        .maybeSingle();
 
       if (!inscripcion) {
         return res.status(403).json({
@@ -441,9 +441,31 @@ async function startServer() {
           message: "El alumno no está inscrito en esta materia.",
         });
       }
+
+      if (inscripcion.estatus !== "activo") {
+        return res.status(403).json({
+          success: false,
+          message: "El alumno aún no ha activado esta materia con su token.",
+          type: "inactive_subject",
+        });
+      }
       const hoy = new Date().toLocaleDateString("en-CA", {
         timeZone: "America/Mexico_City",
       });
+      let { data: sesion } = await supabase
+        .from("sesiones_asistencia")
+        .select("*")
+        .eq("materia_id", Number(materia_id))
+        .eq("token", `QR-${materia_id}-${hoy}`)
+        .maybeSingle();
+
+      if (sesion?.cerrada) {
+        return res.status(409).json({
+          success: false,
+          message: "La asistencia de esta clase ya fue cerrada.",
+          type: "closed",
+        });
+      }
 
       const { data: asistenciaExistente, error: errorDuplicado } = await supabase
         .from("registros_asistencia")
@@ -484,12 +506,27 @@ async function startServer() {
           type: "registered",
         });
       }
-      let { data: sesion } = await supabase
-        .from("sesiones_asistencia")
-        .select("*")
-        .eq("materia_id", Number(materia_id))
-        .eq("token", `QR-${materia_id}-${hoy}`)
-        .maybeSingle();
+      if (!sesion) {
+        const { data: nuevaSesion, error: sesionError } = await supabase
+          .from("sesiones_asistencia")
+          .insert({
+            materia_id: Number(materia_id),
+            token: `QR-${materia_id}-${hoy}`,
+            fecha_expiracion: new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString(),
+            cerrada: false,
+          })
+          .select()
+          .single();
+
+        if (sesionError) {
+          return res.status(500).json({
+            success: false,
+            message: "Error al crear sesión de asistencia.",
+          });
+        }
+
+        sesion = nuevaSesion;
+      }
 
       if (!sesion) {
         const { data: nuevaSesion, error: sesionError } = await supabase
@@ -543,88 +580,96 @@ async function startServer() {
     }
   });
   app.get("/api/professor/subject/:id/attendance-list", async (req, res) => {
-  try {
-    const materia_id = Number(req.params.id);
+    try {
+      const materia_id = Number(req.params.id);
 
-    const sessionId = req.query.session_id
-      ? Number(req.query.session_id)
-      : null;
+      const sessionId = req.query.session_id
+        ? Number(req.query.session_id)
+        : null;
 
-    const hoy = new Date().toLocaleDateString("en-CA", {
-      timeZone: "America/Mexico_City",
-    });
+      const hoy = new Date().toLocaleDateString("en-CA", {
+        timeZone: "America/Mexico_City",
+      });
 
-    const { data: inscritos, error: inscritosError } = await supabase
-      .from("inscripciones")
-      .select(`
+      const { data: inscritos, error: inscritosError } = await supabase
+        .from("inscripciones")
+        .select(`
         alumno_id,
-        usuarios (
-          id,
-          nombre,
-          matricula,
-          correo
-        )
-      `)
-      .eq("materia_id", materia_id)
-      .not("alumno_id", "is", null);
+         estatus,
+  usuarios (
+    id,
+    nombre,
+    matricula,
+    correo
+  )
+`)
+        .eq("materia_id", materia_id)
+        .neq("estatus", "baja")
+        .not("alumno_id", "is", null);
 
-    if (inscritosError) {
+      if (inscritosError) {
+        return res.status(500).json({
+          success: false,
+          message: inscritosError.message,
+        });
+      }
+
+      let asistenciasQuery = supabase
+        .from("registros_asistencia")
+        .select("*")
+        .eq("materia_id", materia_id);
+
+      if (sessionId) {
+        asistenciasQuery = asistenciasQuery.eq("sesion_id", sessionId);
+      } else {
+        asistenciasQuery = asistenciasQuery.eq("fecha", hoy);
+      }
+
+      const { data: asistencias, error: asistenciasError } =
+        await asistenciasQuery;
+
+      if (asistenciasError) {
+        return res.status(500).json({
+          success: false,
+          message: asistenciasError.message,
+        });
+      }
+
+      const lista = inscritos?.map((inscripcion: any) => {
+        const alumno = inscripcion.usuarios;
+
+        const asistencia = asistencias?.find(
+          (a: any) => Number(a.alumno_id) === Number(alumno.id)
+        );
+
+        return {
+          id: alumno.id,
+          nombre: alumno.nombre,
+          matricula: alumno.matricula,
+          correo: alumno.correo,
+          estatus_inscripcion: inscripcion.estatus,
+          estado:
+            inscripcion.estatus !== "activo"
+              ? "pendiente_activar"
+              : asistencia
+                ? asistencia.estado
+                : "pendiente",
+        };
+      });
+
+      return res.json({
+        success: true,
+        students: lista || [],
+        session_id: sessionId,
+      });
+    } catch (error) {
+      console.error("Error al obtener lista de asistencia:", error);
       return res.status(500).json({
         success: false,
-        message: inscritosError.message,
+        message: "Error al obtener lista de asistencia.",
       });
     }
-
-    let asistenciasQuery = supabase
-      .from("registros_asistencia")
-      .select("*")
-      .eq("materia_id", materia_id);
-
-    if (sessionId) {
-      asistenciasQuery = asistenciasQuery.eq("sesion_id", sessionId);
-    } else {
-      asistenciasQuery = asistenciasQuery.eq("fecha", hoy);
-    }
-
-    const { data: asistencias, error: asistenciasError } =
-      await asistenciasQuery;
-
-    if (asistenciasError) {
-      return res.status(500).json({
-        success: false,
-        message: asistenciasError.message,
-      });
-    }
-
-    const lista = inscritos?.map((inscripcion: any) => {
-      const alumno = inscripcion.usuarios;
-
-      const asistencia = asistencias?.find(
-        (a: any) => Number(a.alumno_id) === Number(alumno.id)
-      );
-
-      return {
-        id: alumno.id,
-        nombre: alumno.nombre,
-        matricula: alumno.matricula,
-        correo: alumno.correo,
-        estado: asistencia ? asistencia.estado : "pendiente",
-      };
-    });
-
-    return res.json({
-      success: true,
-      students: lista || [],
-      session_id: sessionId,
-    });
-  } catch (error) {
-    console.error("Error al obtener lista de asistencia:", error);
-    return res.status(500).json({
-      success: false,
-      message: "Error al obtener lista de asistencia.",
-    });
-  }
-});
+  });
 
 
   // --- RUTAS DEL ESTUDIANTE ---
@@ -642,7 +687,8 @@ async function startServer() {
         )
       `,
       )
-      .eq("alumno_id", req.params.id);
+      .eq("alumno_id", req.params.id)
+      .eq("estatus", "activo");
 
     const subjects =
       inscripciones?.map((i: any) => ({
@@ -655,6 +701,90 @@ async function startServer() {
       })) || [];
 
     res.json({ subjects });
+  });
+
+  // Activar materia con token enviado por correo
+  app.post("/api/student/activate-subject", async (req, res) => {
+    try {
+      const { studentId, token } = req.body;
+
+      if (!studentId || !token) {
+        return res.status(400).json({
+          success: false,
+          message: "Ingresa el token que recibiste por correo.",
+        });
+      }
+
+      const cleanToken = String(token).trim().toUpperCase();
+
+      const { data: inscripcion, error: searchError } = await supabase
+        .from("inscripciones")
+        .select(`
+        id,
+        materia_id,
+        alumno_id,
+        token_acceso,
+        estatus,
+        materias (
+          nombre
+        )
+      `)
+        .eq("alumno_id", Number(studentId))
+        .eq("token_acceso", cleanToken)
+        .maybeSingle();
+
+      if (searchError) {
+        return res.status(500).json({
+          success: false,
+          message: "Error al buscar el token.",
+        });
+      }
+
+      if (!inscripcion) {
+        return res.status(404).json({
+          success: false,
+          message: "El token no es válido para este alumno.",
+        });
+      }
+
+      if (inscripcion.estatus === "activo") {
+        return res.status(409).json({
+          success: false,
+          message: "Esta materia ya fue activada anteriormente.",
+        });
+      }
+
+      if (inscripcion.estatus === "baja") {
+        return res.status(403).json({
+          success: false,
+          message: "No puedes activar una materia en la que ya te diste de baja.",
+        });
+      }
+
+      const { error: updateError } = await supabase
+        .from("inscripciones")
+        .update({ estatus: "activo" })
+        .eq("id", inscripcion.id);
+
+      if (updateError) {
+        return res.status(500).json({
+          success: false,
+          message: "No se pudo activar la materia.",
+        });
+      }
+
+      return res.json({
+        success: true,
+        message: "Materia activada correctamente.",
+        subject: inscripcion.materias,
+      });
+    } catch (error) {
+      console.error("Error al activar materia:", error);
+      return res.status(500).json({
+        success: false,
+        message: "Error interno al activar materia.",
+      });
+    }
   });
 
   // Registrar asistencia (Al ingresar el código)
@@ -717,21 +847,85 @@ async function startServer() {
         });
       }
 
+      const materiaIdNumber = Number(materia_id);
+
       const hoy = new Date().toLocaleDateString("en-CA", {
         timeZone: "America/Mexico_City",
       });
 
-      const { data: inscritos } = await supabase
+      // 1. Buscar o crear la sesión del día
+      let { data: sesion, error: sesionBusquedaError } = await supabase
+        .from("sesiones_asistencia")
+        .select("*")
+        .eq("materia_id", materiaIdNumber)
+        .eq("token", `QR-${materiaIdNumber}-${hoy}`)
+        .maybeSingle();
+
+      if (sesionBusquedaError) {
+        return res.status(500).json({
+          success: false,
+          message: "Error al buscar la sesión de asistencia.",
+        });
+      }
+
+      if (!sesion) {
+        const { data: nuevaSesion, error: sesionError } = await supabase
+          .from("sesiones_asistencia")
+          .insert({
+            materia_id: materiaIdNumber,
+            token: `QR-${materiaIdNumber}-${hoy}`,
+            fecha_expiracion: new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString(),
+            cerrada: false,
+          })
+          .select()
+          .single();
+
+        if (sesionError || !nuevaSesion) {
+          return res.status(500).json({
+            success: false,
+            message: "Error al crear la sesión de asistencia.",
+          });
+        }
+
+        sesion = nuevaSesion;
+      }
+
+      // 2. Si ya estaba cerrada, no duplicar nada
+      if (sesion.cerrada) {
+        return res.json({
+          success: true,
+          message: "La asistencia ya estaba cerrada.",
+        });
+      }
+
+      // 3. Obtener solo alumnos activos
+      const { data: inscritos, error: inscritosError } = await supabase
         .from("inscripciones")
         .select("alumno_id")
-        .eq("materia_id", Number(materia_id))
+        .eq("materia_id", materiaIdNumber)
+        .eq("estatus", "activo")
         .not("alumno_id", "is", null);
 
-      const { data: asistenciasHoy } = await supabase
+      if (inscritosError) {
+        return res.status(500).json({
+          success: false,
+          message: "Error al obtener alumnos activos.",
+        });
+      }
+
+      // 4. Obtener asistencias ya registradas hoy
+      const { data: asistenciasHoy, error: asistenciasError } = await supabase
         .from("registros_asistencia")
         .select("alumno_id")
-        .eq("materia_id", Number(materia_id))
+        .eq("materia_id", materiaIdNumber)
         .eq("fecha", hoy);
+
+      if (asistenciasError) {
+        return res.status(500).json({
+          success: false,
+          message: "Error al obtener asistencias de hoy.",
+        });
+      }
 
       const presentes = new Set(
         asistenciasHoy?.map((a) => Number(a.alumno_id)) || []
@@ -740,56 +934,50 @@ async function startServer() {
       const pendientes =
         inscritos?.filter((i) => !presentes.has(Number(i.alumno_id))) || [];
 
-      if (pendientes.length === 0) {
-        return res.json({
-          success: true,
-          message: "No hay alumnos pendientes.",
-        });
+      // 5. Insertar No asistió solo para activos que no pasaron lista
+      if (pendientes.length > 0) {
+        const ausentes = pendientes.map((p) => ({
+          sesion_id: sesion.id,
+          alumno_id: p.alumno_id,
+          materia_id: materiaIdNumber,
+          fecha: hoy,
+          estado: "no_asistio",
+        }));
+
+        const { error: insertError } = await supabase
+          .from("registros_asistencia")
+          .insert(ausentes);
+
+        if (insertError) {
+          return res.status(500).json({
+            success: false,
+            message: insertError.message,
+          });
+        }
       }
 
-      let { data: sesion } = await supabase
+      // 6. Marcar la sesión como cerrada SIEMPRE
+      const { error: closeError } = await supabase
         .from("sesiones_asistencia")
-        .select("*")
-        .eq("materia_id", Number(materia_id))
-        .eq("token", `QR-${materia_id}-${hoy}`)
-        .maybeSingle();
+        .update({
+          cerrada: true,
+          fecha_expiracion: new Date().toISOString(),
+        })
+        .eq("id", sesion.id);
 
-      if (!sesion) {
-        const { data: nuevaSesion } = await supabase
-          .from("sesiones_asistencia")
-          .insert({
-            materia_id: Number(materia_id),
-            token: `QR-${materia_id}-${hoy}`,
-            fecha_expiracion: new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString(),
-          })
-          .select()
-          .single();
-
-        sesion = nuevaSesion;
-      }
-
-      const ausentes = pendientes.map((p) => ({
-        sesion_id: sesion.id,
-        alumno_id: p.alumno_id,
-        materia_id: Number(materia_id),
-        fecha: hoy,
-        estado: "no_asistio",
-      }));
-
-      const { error } = await supabase
-        .from("registros_asistencia")
-        .insert(ausentes);
-
-      if (error) {
+      if (closeError) {
         return res.status(500).json({
           success: false,
-          message: error.message,
+          message: "Error al marcar la asistencia como cerrada.",
         });
       }
 
       return res.json({
         success: true,
-        message: "Asistencia cerrada correctamente.",
+        message:
+          pendientes.length > 0
+            ? "Asistencia cerrada correctamente."
+            : "Asistencia cerrada correctamente. No había alumnos activos pendientes.",
       });
     } catch (error) {
       console.error("Error al cerrar asistencia:", error);

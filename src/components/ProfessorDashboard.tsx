@@ -287,7 +287,8 @@ function SubjectDetail({
   }, [subject.id, refreshKey, selectedSessionId]);
 
   const closeAttendance = async () => {
-    const confirmClose = confirm("¿Seguro que quieres cerrar la asistencia? Los pendientes pasarán a No asistió.");
+    const confirmClose = confirm(
+  "¿Seguro que quieres cerrar la asistencia? Solo los alumnos activos que no pasaron lista cambiarán a No asistió.");
 
     if (!confirmClose) return;
 
@@ -305,7 +306,7 @@ function SubjectDetail({
 
     if (result.success) {
       alert("Asistencia cerrada correctamente.");
-      fetchAttendanceList();
+     fetchAttendanceList(selectedSessionId);
     } else {
       alert(result.message || "Error al cerrar asistencia.");
     }
@@ -750,17 +751,21 @@ function SubjectDetail({
                     <td className="px-6 py-4 text-center">
                       <span
                         className={`inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold ${student.estado === "presente"
-                          ? "bg-green-50 text-green-700 border border-green-200"
-                          : student.estado === "no_asistio"
-                            ? "bg-red-50 text-red-700 border border-red-200"
-                            : "bg-yellow-50 text-yellow-700 border border-yellow-200"
+                            ? "bg-green-50 text-green-700 border border-green-200"
+                            : student.estado === "no_asistio"
+                              ? "bg-red-50 text-red-700 border border-red-200"
+                              : student.estado === "pendiente_activar"
+                                ? "bg-slate-50 text-slate-700 border border-slate-200"
+                                : "bg-yellow-50 text-yellow-700 border border-yellow-200"
                           }`}
                       >
                         {student.estado === "presente"
                           ? "Presente"
                           : student.estado === "no_asistio"
                             ? "No asistió"
-                            : " Pendiente"}
+                            : student.estado === "pendiente_activar"
+                              ? "Pendiente de activar"
+                              : "Pendiente"}
                       </span>
                     </td>
                   </tr>

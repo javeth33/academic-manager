@@ -8,7 +8,7 @@ interface StudentDashboardProps {
   user: any;
 }
 
-const SHOW_TOKEN_FLOW = false;
+const SHOW_TOKEN_FLOW = true;
 
 export default function StudentDashboard({ user }: StudentDashboardProps) {
   const [subjects, setSubjects] = useState<any[]>([]);
@@ -32,26 +32,39 @@ export default function StudentDashboard({ user }: StudentDashboardProps) {
     }
   };
 
-  const handleAttendance = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setMessage('');
-    try {
-      const res = await fetch('/api/student/attend', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ studentId: user.id, token }),
-      });
-      const data = await res.json();
-      if (data.success) {
-        setMessage('Éxito: ¡Asistencia marcada!');
-        setToken('');
-      } else {
-        setMessage('Error: ' + data.message);
-      }
-    } catch (err) {
-      setMessage('Falló la conexión');
+  const activateSubject = async (e: React.FormEvent) => {
+  e.preventDefault();
+  setMessage('');
+
+  if (!token.trim()) {
+    setMessage('Error: Ingresa el token que recibiste por correo.');
+    return;
+  }
+
+  try {
+    const res = await fetch('/api/student/activate-subject', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        studentId: user.id,
+        token: token.trim().toUpperCase(),
+      }),
+    });
+
+    const data = await res.json();
+
+    if (data.success) {
+      setMessage('Éxito: Materia activada correctamente.');
+      setToken('');
+      fetchSubjects();
+    } else {
+      setMessage('Error: ' + data.message);
     }
-  };
+  } catch (err) {
+    console.error(err);
+    setMessage('Error: Falló la conexión al activar la materia.');
+  }
+};
 
   return (
     <div className="p-8 max-w-5xl mx-auto">
@@ -68,12 +81,12 @@ export default function StudentDashboard({ user }: StudentDashboardProps) {
               <>
                 <h3 className="text-xl font-bold text-blue-900 mb-4 flex items-center gap-2">
                   <CheckCircle className="w-6 h-6 text-blue-500" />
-                  Marcar Asistencia
+                  Activar materia
                 </h3>
                 <p className="text-sm text-slate-500 mb-6">
-                  Ingresa el token de 6 caracteres proporcionado por tu profesor.
+                  Ingresa el token que recibiste por correo para activar tu materia.
                 </p>
-                <form onSubmit={handleAttendance} className="space-y-4">
+                <form onSubmit={activateSubject} className="space-y-4">
                   <input
                     type="text"
                     value={token}
@@ -87,7 +100,7 @@ export default function StudentDashboard({ user }: StudentDashboardProps) {
                     disabled={!token}
                     className="w-full bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white font-semibold py-3 rounded-xl shadow-lg shadow-blue-200 transition-all"
                   >
-                    Registrar
+                    Activar materia
                   </button>
                 </form>
                 {message && (
@@ -129,7 +142,7 @@ export default function StudentDashboard({ user }: StudentDashboardProps) {
             <p>Cargando clases...</p>
           ) : subjects.length === 0 ? (
             <div className="bg-white p-8 rounded-2xl border border-dashed border-slate-200 text-center text-slate-400">
-              No estás inscrito en ninguna clase aún.
+              No tienes materias activas todavía. Ingresa el token que recibiste por correo para activar una materia.
             </div>
           ) : (
             subjects.map((subject) => (
