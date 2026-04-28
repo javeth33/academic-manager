@@ -799,6 +799,7 @@ async function startServer() {
         });
       }
 
+      // 1. Buscar inscripción del alumno en esa materia
       const { data: inscripcion, error: searchError } = await supabase
         .from("inscripciones")
         .select("id, estatus")
@@ -827,6 +828,32 @@ async function startServer() {
         });
       }
 
+      // 2. Buscar datos del alumno
+      const { data: alumno } = await supabase
+        .from("usuarios")
+        .select("id, nombre, correo, matricula")
+        .eq("id", Number(studentId))
+        .maybeSingle();
+
+      // 3. Buscar datos de la materia y del profesor
+      const { data: materia } = await supabase
+        .from("materias")
+        .select(`
+        id,
+        nombre,
+        nrc,
+        horario,
+        salon,
+        profesor_id,
+        usuarios!materias_profesor_id_fkey (
+          nombre,
+          correo
+        )
+      `)
+        .eq("id", Number(subjectId))
+        .maybeSingle();
+
+      // 4. Cambiar estatus a baja
       const { error: updateError } = await supabase
         .from("inscripciones")
         .update({ estatus: "baja" })
@@ -837,6 +864,69 @@ async function startServer() {
           success: false,
           message: "No se pudo realizar la baja.",
         });
+      }
+
+      // 5. Enviar correo al profesor
+      try {
+        const profesor: any = materia?.usuarios;
+
+        if (alumno && materia && profesor?.correo) {
+          const emailData = {
+            sender: {
+              name: "BUAP Academic",
+              email: "rojasdiego133@gmail.com",
+            },
+            to: [
+              {
+                email: profesor.correo,
+                name: profesor.nombre || "Profesor",
+              },
+            ],
+            subject: `Baja de alumno en la materia ${materia.nombre}`,
+            htmlContent: `
+            <div style="font-family: Arial, sans-serif; padding: 20px; color: #333; max-width: 600px; margin: 0 auto; border: 1px solid #e2e8f0; border-radius: 10px;">
+              <h2 style="color: #1e3a8a;">Notificación de baja de materia</h2>
+
+              <p>Hola, <strong>${profesor.nombre || "Profesor"}</strong>.</p>
+
+              <p>Se informa que el siguiente alumno se ha dado de baja de una materia:</p>
+
+              <div style="background-color: #f8fafc; padding: 15px; border-radius: 8px; margin: 20px 0;">
+                <p><strong>Materia:</strong> ${materia.nombre}</p>
+                <p><strong>NRC:</strong> ${materia.nrc || "No registrado"}</p>
+                <p><strong>Alumno:</strong> ${alumno.nombre}</p>
+                <p><strong>Matrícula:</strong> ${alumno.matricula || "No registrada"}</p>
+                <p><strong>Correo del alumno:</strong> ${alumno.correo}</p>
+              </div>
+
+              <p style="font-size: 14px; color: #64748b;">
+                Esta baja fue registrada automáticamente en el sistema académico.
+              </p>
+            </div>
+          `,
+          };
+
+          const response = await fetch("https://api.brevo.com/v3/smtp/email", {
+            method: "POST",
+            headers: {
+              accept: "application/json",
+              "api-key": process.env.BREVO_API_KEY || "",
+              "content-type": "application/json",
+            },
+            body: JSON.stringify(emailData),
+          });
+
+          if (!response.ok) {
+            const errorDetalle = await response.text();
+            console.log("Brevo rechazó el correo de baja:", errorDetalle);
+          } else {
+            console.log(`Correo de baja enviado al profesor: ${profesor.correo}`);
+          }
+        } else {
+          console.log("No se envió correo de baja: faltan datos del alumno, materia o profesor.");
+        }
+      } catch (mailError) {
+        console.log("Error al enviar correo de baja al profesor:", mailError);
       }
 
       return res.json({
@@ -851,7 +941,6 @@ async function startServer() {
       });
     }
   });
-
   // Registrar asistencia 
   app.post("/api/student/attend", async (req, res) => {
     const { studentId, token } = req.body;
