@@ -787,7 +787,72 @@ async function startServer() {
     }
   });
 
-  // Registrar asistencia (Al ingresar el código)
+  // Darse de baja de una materia
+  app.post("/api/student/drop-subject", async (req, res) => {
+    try {
+      const { studentId, subjectId } = req.body;
+
+      if (!studentId || !subjectId) {
+        return res.status(400).json({
+          success: false,
+          message: "Falta el alumno o la materia.",
+        });
+      }
+
+      const { data: inscripcion, error: searchError } = await supabase
+        .from("inscripciones")
+        .select("id, estatus")
+        .eq("alumno_id", Number(studentId))
+        .eq("materia_id", Number(subjectId))
+        .maybeSingle();
+
+      if (searchError) {
+        return res.status(500).json({
+          success: false,
+          message: "Error al buscar la inscripción.",
+        });
+      }
+
+      if (!inscripcion) {
+        return res.status(404).json({
+          success: false,
+          message: "No estás inscrito en esta materia.",
+        });
+      }
+
+      if (inscripcion.estatus === "baja") {
+        return res.status(409).json({
+          success: false,
+          message: "Ya te diste de baja de esta materia anteriormente.",
+        });
+      }
+
+      const { error: updateError } = await supabase
+        .from("inscripciones")
+        .update({ estatus: "baja" })
+        .eq("id", inscripcion.id);
+
+      if (updateError) {
+        return res.status(500).json({
+          success: false,
+          message: "No se pudo realizar la baja.",
+        });
+      }
+
+      return res.json({
+        success: true,
+        message: "Te diste de baja correctamente de la materia.",
+      });
+    } catch (error) {
+      console.error("Error al darse de baja:", error);
+      return res.status(500).json({
+        success: false,
+        message: "Error interno al darse de baja.",
+      });
+    }
+  });
+
+  // Registrar asistencia 
   app.post("/api/student/attend", async (req, res) => {
     const { studentId, token } = req.body;
 

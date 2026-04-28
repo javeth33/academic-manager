@@ -33,38 +33,71 @@ export default function StudentDashboard({ user }: StudentDashboardProps) {
   };
 
   const activateSubject = async (e: React.FormEvent) => {
-  e.preventDefault();
-  setMessage('');
+    e.preventDefault();
+    setMessage('');
 
-  if (!token.trim()) {
-    setMessage('Error: Ingresa el token que recibiste por correo.');
-    return;
-  }
-
-  try {
-    const res = await fetch('/api/student/activate-subject', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        studentId: user.id,
-        token: token.trim().toUpperCase(),
-      }),
-    });
-
-    const data = await res.json();
-
-    if (data.success) {
-      setMessage('Éxito: Materia activada correctamente.');
-      setToken('');
-      fetchSubjects();
-    } else {
-      setMessage('Error: ' + data.message);
+    if (!token.trim()) {
+      setMessage('Error: Ingresa el token que recibiste por correo.');
+      return;
     }
-  } catch (err) {
-    console.error(err);
-    setMessage('Error: Falló la conexión al activar la materia.');
-  }
-};
+
+    try {
+      const res = await fetch('/api/student/activate-subject', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          studentId: user.id,
+          token: token.trim().toUpperCase(),
+        }),
+      });
+
+      const data = await res.json();
+
+      if (data.success) {
+        setMessage('Éxito: Materia activada correctamente.');
+        setToken('');
+        fetchSubjects();
+      } else {
+        setMessage('Error: ' + data.message);
+      }
+    } catch (err) {
+      console.error(err);
+      setMessage('Error: Falló la conexión al activar la materia.');
+    }
+  };
+
+  const dropSubject = async (subjectId: number, subjectName: string) => {
+    const confirmDrop = confirm(
+      `¿Seguro que deseas darte de baja de "${subjectName}"? Esta acción no se puede deshacer.`
+    );
+
+    if (!confirmDrop) return;
+
+    try {
+      const res = await fetch("/api/student/drop-subject", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          studentId: user.id,
+          subjectId,
+        }),
+      });
+
+      const data = await res.json();
+
+      if (data.success) {
+        setMessage("Éxito: Te diste de baja correctamente de la materia.");
+        fetchSubjects();
+      } else {
+        setMessage("Error: " + data.message);
+      }
+    } catch (err) {
+      console.error(err);
+      setMessage("Error: Falló la conexión al darse de baja.");
+    }
+  };
 
   return (
     <div className="p-8 max-w-5xl mx-auto">
@@ -109,7 +142,7 @@ export default function StudentDashboard({ user }: StudentDashboardProps) {
 
                   </div>
                 )}
-                
+
               </>
             )}
 
@@ -172,6 +205,12 @@ export default function StudentDashboard({ user }: StudentDashboardProps) {
                     {subject.classroom}
                   </div>
                 </div>
+                <button
+                  onClick={() => dropSubject(subject.id, subject.name)}
+                  className="mt-5 w-full bg-red-50 hover:bg-red-100 text-red-700 border border-red-200 font-semibold py-3 rounded-xl transition-all"
+                >
+                  Darse de baja
+                </button>
               </motion.div>
             ))
           )}
