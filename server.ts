@@ -1,10 +1,156 @@
-import express from "express";
+import express, { Request, Response, NextFunction } from "express";
 import { createServer as createViteServer } from "vite";
 import { supabase, initDb } from "./src/db";
 import crypto from "crypto";
 import path from "path";
-// Inicializamos la conexión a Supabase
+import bcrypt from "bcrypt";
+import jwt from "jsonwebtoken";
+
+// ─── Constants ────────────────────────────────────────────────────────────────
+
+const SALT_ROUNDS = 12;
+const JWT_SECRET = process.env.JWT_SECRET ?? (() => { throw new Error("JWT_SECRET no está definido en las variables de entorno."); })();
+const JWT_EXPIRES_IN = "8h";
+
+// ─── Init DB ──────────────────────────────────────────────────────────────────
+
 initDb();
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+function normalizeRole(input: unknown): "admin" | "professor" | "student" | string {
+  const raw = String(input ?? "").trim().toLowerCase();
+  if (!raw) return raw;
+  if (raw === "admin" || raw === "administrator" || raw === "administrador") return "admin";
+  if (raw === "professor" || raw === "profesor" || raw === "maestro" || raw === "docente") return "professor";
+  if (raw === "student" || raw === "alumno" || raw === "estudiante") return "student";
+  return raw;
+}
+
+async function sendAccessTokenEmail(toEmail: string, toName: string, subjectName: string, token: string): Promise<boolean> {
+  const apiKey = process.env.BREVO_API_KEY ?? "";
+  if (!apiKey) {
+    console.error("[Brevo] BREVO_API_KEY no definida: no se puede enviar correo.");
+    return false;
+  }
+  const safeName = String(toName || toEmail).replace(/</g, "&lt;");
+  const emailData = {
+    sender: { name: "BUAP Academic", email: "rojasdiego133@gmail.com" },
+    to: [{ email: toEmail, name: safeName }],
+    subject: `🔑 Código de acceso para: ${subjectName}`,
+    htmlContent: `
+      <div style="font-family: Arial, sans-serif; padding: 20px; color: #333; max-width: 600px; margin: 0 auto; border: 1px solid #e2e8f0; border-radius: 10px;">
+        <h2 style="color: #1e3a8a; text-align: center;">¡Hola, ${safeName}!</h2>
+        <p>Tu profesor te ha agregado a la clase de <strong>${subjectName}</strong> en el sistema BUAP Academic.</p>
+        <p>Para desbloquear tu clase, ingresa el siguiente código en tu panel:</p>
+        <div style="background-color: #eff6ff; padding: 20px; text-align: center; border-radius: 8px; margin: 30px 0; border: 2px dashed #93c5fd;">
+          <h1 style="color: #2563eb; letter-spacing: 8px; margin: 0; font-size: 32px;">${token}</h1>
+        </div>
+      </div>
+    `,
+  };
+  try {
+    const res = await fetch("https://api.brevo.com/v3/smtp/email", {
+      method: "POST",
+      headers: {
+        accept: "application/json",
+        "api-key": apiKey,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify(emailData),
+    });
+    const txt = await res.text();
+    console.log("[Brevo] Status:", res.status, "| Body:", txt);
+    if (!res.ok) {
+      console.error("[Brevo] Error HTTP", res.status, txt);
+      return false;
+    }
+    return true;
+  } catch (e) {
+    console.error("[Brevo] Error al enviar correo:", e);
+    return false;
+  }
+}
+
+async function findInscripcionForStudent(materiaId: number, emailLower: string, alumnoId: number | null) {
+  if (alumnoId) {
+    const { data } = await supabase
+      .from("inscripciones")
+      .select("id, estatus")
+      .eq("materia_id", materiaId)
+      .eq("alumno_id", alumnoId)
+      .maybeSingle();
+    return data;
+  }
+  const { data } = await supabase
+    .from("inscripciones")
+    .select("id, estatus")
+    .eq("materia_id", materiaId)
+    .eq("alumno_temp", emailLower)
+    .maybeSingle();
+  return data;
+}
+
+/**
+ * Obtiene la sesión de asistencia de hoy para una materia,
+ * o la crea si no existe todavía.
+ */
+async function getOrCreateSession(materia_id: number, hoy: string) {
+  const tokenQR = `QR-${materia_id}-${hoy}`;
+
+  const { data: existing } = await supabase
+    .from("sesiones_asistencia")
+    .select("*")
+    .eq("materia_id", materia_id)
+    .eq("token", tokenQR)
+    .maybeSingle();
+
+  if (existing) return existing;
+
+  const { data: nueva, error } = await supabase
+    .from("sesiones_asistencia")
+    .insert({
+      materia_id,
+      token: tokenQR,
+      fecha_expiracion: new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString(),
+      cerrada: false,
+    })
+    .select()
+    .single();
+
+  if (error) throw new Error(`Error al crear sesión: ${error.message}`);
+  return nueva;
+}
+
+// ─── Auth middleware ──────────────────────────────────────────────────────────
+
+function authMiddleware(req: Request, res: Response, next: NextFunction) {
+  const header = req.headers.authorization;
+  if (!header?.startsWith("Bearer ")) {
+    return res.status(401).json({ success: false, message: "Token de autenticación requerido." });
+  }
+
+  const token = header.slice(7);
+  try {
+    const payload = jwt.verify(token, JWT_SECRET) as { userId: number; role: string };
+    (req as any).user = { ...payload, role: normalizeRole(payload.role) };
+    next();
+  } catch {
+    return res.status(401).json({ success: false, message: "Token inválido o expirado." });
+  }
+}
+
+function requireRole(...roles: string[]) {
+  return (req: Request, res: Response, next: NextFunction) => {
+    const user = (req as any).user;
+    if (!user || !roles.includes(user.role)) {
+      return res.status(403).json({ success: false, message: "No tienes permiso para realizar esta acción." });
+    }
+    next();
+  };
+}
+
+// ─── Server ───────────────────────────────────────────────────────────────────
 
 async function startServer() {
   const app = express();
@@ -12,377 +158,437 @@ async function startServer() {
 
   app.use(express.json());
 
-  // --- RUTAS DE AUTENTICACIÓN ---
+  // ── Autenticación ─────────────────────────────────────────────────────────────
 
   // Login
   app.post("/api/login", async (req, res) => {
     const { email, password } = req.body;
 
+    if (!email || !password) {
+      return res.status(400).json({ success: false, message: "Correo y contraseña son requeridos." });
+    }
+
     const { data: user, error } = await supabase
       .from("usuarios")
       .select("*")
-      .eq("correo", email)
-      .eq("contrasena", password)
-      .single();
+      .eq("correo", email.trim().toLowerCase())
+      .maybeSingle();
 
-    if (user) {
-      res.json({
-        success: true,
-        user: {
-          id: user.id,
-          name: user.nombre,
-          email: user.correo,
-          role: user.rol,
-          matricula: user.matricula,
-        },
-      });
-    } else {
-      res
-        .status(401)
-        .json({ success: false, message: "Credenciales inválidas" });
-    }
-  });
-
-  // --- RUTAS DEL ADMINISTRADOR ---
-
-  // Crear materia manualmente
-  app.post("/api/admin/subjects", async (req, res) => {
-    const { nrc, name, schedule, classroom, professorName } = req.body;
-
-    // 1. Buscamos si el profesor ya existe en el sistema por su nombre
-    const { data: professor } = await supabase
-      .from("usuarios")
-      .select("id")
-      .ilike("nombre", professorName.trim())
-      .eq("rol", "professor")
-      .single();
-
-    // 2. Insertamos la materia haciendo la misma validación que en la subida masiva
-    const { error } = await supabase.from("materias").insert([
-      {
-        nrc,
-        nombre: name,
-        horario: schedule,
-        salon: classroom,
-        profesor_id: professor ? professor.id : null,
-        profesor_temp: professor ? null : professorName.trim(),
-      },
-    ]);
-
-    if (error)
-      return res.status(500).json({ success: false, message: error.message });
-    res.json({ success: true });
-  });
-  // --- RUTA MODIFICADA: Registro (Asignación retroactiva) ---
-  app.post("/api/register", async (req, res) => {
-    // 🎤 MICRÓFONO 1: Apenas entra la petición
-    console.log("[BACKEND] Petición de registro recibida:", req.body);
-
-    const { name, email, password, role, matricula } = req.body;
-
-    if (!name || !email || !password || !role) {
-      console.log("[BACKEND] Faltan campos obligatorios");
-      return res
-        .status(400)
-        .json({ success: false, message: "Faltan campos obligatorios" });
+    if (error || !user) {
+      return res.status(401).json({ success: false, message: "Credenciales inválidas." });
     }
 
-    // Insertamos el usuario
-    const { data: user, error } = await supabase
-      .from("usuarios")
-      .insert([
-        {
-          nombre: name,
-          correo: email,
-          contrasena: password,
-          rol: role,
-          matricula: matricula || null,
-        },
-      ])
-      .select()
-      .single();
-
-    if (error) {
-      // 🎤 MICRÓFONO 2: Si Supabase rechaza al usuario (ej. correo repetido)
-      console.log("[BACKEND] Error de Supabase al crear usuario:", error);
-      if (error.code === "23505")
-        return res
-          .status(400)
-          .json({ success: false, message: "El correo ya está registrado" });
-      return res.status(500).json({ success: false, message: error.message });
+    const passwordMatch = await bcrypt.compare(password, user.contrasena);
+    if (!passwordMatch) {
+      return res.status(401).json({ success: false, message: "Credenciales inválidas." });
     }
 
-    console.log(
-      `[BACKEND] Usuario creado en Supabase con éxito: ${user.nombre}`,
+    const roleNorm = normalizeRole(user.rol);
+    const token = jwt.sign(
+      { userId: user.id, role: roleNorm },
+      JWT_SECRET,
+      { expiresIn: JWT_EXPIRES_IN }
     );
 
-    //  MAGIA RETROACTIVA
-    if (role === "professor" && user) {
-      console.log(`Buscando materias perdidas para: "${name.trim()}"`);
-
-      const { data: materiasPendientes, error: errBusqueda } = await supabase
-        .from("materias")
-        .select("id, profesor_temp")
-        .ilike("profesor_temp", `%${name.trim()}%`);
-
-      console.log(`Resultados de la búsqueda:`, materiasPendientes);
-
-      if (materiasPendientes && materiasPendientes.length > 0) {
-        const ids = materiasPendientes.map((m) => m.id);
-        const { error: errUpdate } = await supabase
-          .from("materias")
-          .update({ profesor_id: user.id, profesor_temp: null })
-          .in("id", ids);
-
-        if (errUpdate) console.log(`Error al actualizar materias:`, errUpdate);
-        else console.log(`🎉 ¡Materias asignadas con éxito a ${name}!`);
-      } else {
-        console.log(`No se encontraron materias pendientes con ese nombre.`);
-      }
-    } else {
-      console.log(`No se ejecutó la búsqueda. Rol: "${role}"`);
-    }
-
-    //  MAGIA RETROACTIVA PARA ALUMNOS
-    if (role === "student" && user) {
-      const emailLower = email.trim().toLowerCase();
-      console.log(`Buscando clases en espera para el correo: "${emailLower}"`);
-
-      const { data: clasesPendientes } = await supabase
-        .from("inscripciones")
-        .select("id")
-        .eq("alumno_temp", emailLower);
-
-      if (clasesPendientes && clasesPendientes.length > 0) {
-        const ids = clasesPendientes.map((c) => c.id);
-        const { error: errUpdate } = await supabase
-          .from("inscripciones")
-          .update({ alumno_id: user.id, alumno_temp: null })
-          .in("id", ids);
-
-        if (errUpdate) console.log(`❌ Error al inscribir alumno:`, errUpdate);
-        else console.log(`¡Alumno ${name} auto-inscrito en sus materias!`);
-      } else {
-        console.log(`No se encontraron clases pendientes para este correo.`);
-      }
-    }
-
-    res.json({
+    return res.json({
       success: true,
+      token,
       user: {
         id: user.id,
         name: user.nombre,
         email: user.correo,
-        role: user.rol,
+        role: roleNorm,
         matricula: user.matricula,
       },
     });
   });
 
-  // --- RUTA MODIFICADA: Subir materias masivamente (Admin) ---
-  app.post("/api/admin/subjects/bulk", async (req, res) => {
+  // Registro
+  app.post("/api/register", async (req, res) => {
+    const { name, email, password, role, matricula } = req.body;
+
+    if (!name || !email || !password || !role) {
+      return res.status(400).json({ success: false, message: "Faltan campos obligatorios." });
+    }
+
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(email)) {
+      return res.status(400).json({ success: false, message: "El formato del correo no es válido." });
+    }
+
+    if (password.length < 8) {
+      return res.status(400).json({ success: false, message: "La contraseña debe tener al menos 8 caracteres." });
+    }
+
+    const hashedPassword = await bcrypt.hash(password, SALT_ROUNDS);
+
+    const { data: user, error } = await supabase
+      .from("usuarios")
+      .insert([{
+        nombre: name.trim(),
+        correo: email.trim().toLowerCase(),
+        contrasena: hashedPassword,
+        rol: role,
+        matricula: matricula?.trim() || null,
+      }])
+      .select()
+      .single();
+
+    if (error) {
+      if (error.code === "23505") {
+        return res.status(400).json({ success: false, message: "El correo ya está registrado." });
+      }
+      return res.status(500).json({ success: false, message: "Error interno al crear el usuario." });
+    }
+
+    // Asignación retroactiva: profesores
+    if (role === "professor" && user) {
+      const { data: materiasPendientes } = await supabase
+        .from("materias")
+        .select("id")
+        .ilike("profesor_temp", `%${name.trim()}%`);
+
+      if (materiasPendientes?.length) {
+        const ids = materiasPendientes.map((m) => m.id);
+        await supabase
+          .from("materias")
+          .update({ profesor_id: user.id, profesor_temp: null })
+          .in("id", ids);
+      }
+    }
+
+    // Asignación retroactiva: alumnos
+    if (role === "student" && user) {
+      const emailLower = email.trim().toLowerCase();
+      const { data: clasesPendientes } = await supabase
+        .from("inscripciones")
+        .select("id")
+        .eq("alumno_temp", emailLower);
+
+      if (clasesPendientes?.length) {
+        const ids = clasesPendientes.map((c) => c.id);
+        await supabase
+          .from("inscripciones")
+          .update({ alumno_id: user.id, alumno_temp: null })
+          .in("id", ids);
+      }
+    }
+
+    const roleNorm = normalizeRole(user.rol);
+    const token = jwt.sign(
+      { userId: user.id, role: roleNorm },
+      JWT_SECRET,
+      { expiresIn: JWT_EXPIRES_IN }
+    );
+
+    return res.json({
+      success: true,
+      token,
+      user: {
+        id: user.id,
+        name: user.nombre,
+        email: user.correo,
+        role: roleNorm,
+        matricula: user.matricula,
+      },
+    });
+  });
+
+  // ── Administrador ─────────────────────────────────────────────────────────────
+
+  // Crear materia individual
+  app.post("/api/admin/subjects", authMiddleware, requireRole("admin"), async (req, res) => {
+    const { nrc, name, schedule, classroom, professorName } = req.body;
+
+    if (!nrc || !name) {
+      return res.status(400).json({ success: false, message: "NRC y nombre son requeridos." });
+    }
+
+    const { data: professor } = await supabase
+      .from("usuarios")
+      .select("id")
+      .ilike("nombre", `%${professorName?.trim() ?? ""}%`)
+      .eq("rol", "professor")
+      .maybeSingle();
+
+    const { error } = await supabase.from("materias").insert([{
+      nrc,
+      nombre: name,
+      horario: schedule,
+      salon: classroom,
+      profesor_id: professor ? professor.id : null,
+      profesor_temp: professor ? null : professorName?.trim() ?? null,
+    }]);
+
+    if (error) return res.status(500).json({ success: false, message: error.message });
+    return res.json({ success: true, linked: !!professor });
+  });
+
+  // Carga masiva de materias
+  app.post("/api/admin/subjects/bulk", authMiddleware, requireRole("admin"), async (req, res) => {
     const { subjects } = req.body;
 
+    if (!Array.isArray(subjects) || subjects.length === 0) {
+      return res.status(400).json({ success: false, message: "Lista de materias vacía." });
+    }
+
     try {
-      // 1. Obtenemos a todos los profesores actuales de golpe para no saturar la BD
       const { data: profesores } = await supabase
         .from("usuarios")
         .select("id, nombre")
         .eq("rol", "professor");
 
       for (const sub of subjects) {
-        const nombreExcel = sub.professorName.trim();
-
-        // 2. Buscamos si el profe del Excel ya existe en nuestro sistema (ignorando mayúsculas)
+        const nombreExcel = sub.professorName?.trim() ?? "";
         const profExistente = profesores?.find(
-          (p) => p.nombre.toLowerCase() === nombreExcel.toLowerCase(),
+          (p) => p.nombre.toLowerCase() === nombreExcel.toLowerCase()
         );
 
-        // 3. Insertamos la materia
-        await supabase.from("materias").insert([
-          {
-            nrc: sub.nrc,
-            nombre: sub.name,
-            horario: sub.schedule,
-            salon: sub.classroom,
-            profesor_id: profExistente ? profExistente.id : null,
-            profesor_temp: profExistente ? null : nombreExcel, // <- ¡ESTA ES LA LÍNEA CLAVE!
-          },
-        ]);
+        await supabase.from("materias").insert([{
+          nrc: sub.nrc,
+          nombre: sub.name,
+          horario: sub.schedule,
+          salon: sub.classroom,
+          profesor_id: profExistente ? profExistente.id : null,
+          profesor_temp: profExistente ? null : nombreExcel,
+        }]);
       }
-      res.json({ success: true, message: "Materias procesadas correctamente" });
+
+      return res.json({ success: true, message: "Materias procesadas correctamente." });
     } catch (error: any) {
-      res
-        .status(500)
-        .json({
-          success: false,
-          message: "Error al procesar lote de materias",
-        });
+      return res.status(500).json({ success: false, message: "Error al procesar el lote de materias." });
     }
   });
 
-  // --- RUTAS DEL PROFESOR ---
+  // ── Profesor ──────────────────────────────────────────────────────────────────
 
-  // Obtener materias del profesor
-  app.get("/api/professor/:id/subjects", async (req, res) => {
+  // Materias del profesor
+  app.get("/api/professor/:id/subjects", authMiddleware, requireRole("professor", "admin"), async (req, res) => {
     const { data: materias, error } = await supabase
       .from("materias")
       .select("*")
       .eq("profesor_id", req.params.id);
 
-    if (error) return res.status(500).json({ error: error.message });
+    if (error) return res.status(500).json({ success: false, message: error.message });
 
-    // Adaptar nombres para el frontend
-    const subjects = materias.map((m) => ({
-      id: m.id,
-      nrc: m.nrc,
-      name: m.nombre,
-      schedule: m.horario,
-      classroom: m.salon,
-      professor_id: m.profesor_id,
-    }));
-
-    res.json({ subjects });
+    return res.json({
+      subjects: materias.map((m) => ({
+        id: m.id,
+        nrc: m.nrc,
+        name: m.nombre,
+        schedule: m.horario,
+        classroom: m.salon,
+        professor_id: m.profesor_id,
+      })),
+    });
   });
 
-  // Subir estudiantes masivamente a una clase (Con Tokens y Correos)
-  app.post("/api/professor/students/bulk", async (req, res) => {
+  // Subir alumnos (individual o masivo)
+  app.post("/api/professor/students/bulk", authMiddleware, requireRole("professor", "admin"), async (req, res) => {
     const { subjectId, students } = req.body;
 
-    console.log(
-      `\n[BACKEND] Recibiendo ${students?.length || 0} alumnos para la materia ID: ${subjectId}`,
-    );
-
-    if (!students || students.length === 0) {
-      return res
-        .status(400)
-        .json({ success: false, message: "La lista de alumnos llegó vacía." });
+    if (!Array.isArray(students) || students.length === 0) {
+      return res.status(400).json({ success: false, message: "La lista de alumnos llegó vacía." });
     }
 
     try {
-      // 1. Obtener el nombre de la materia para el correo
+      const mid = Number(subjectId);
+      if (!mid) {
+        return res.status(400).json({ success: false, message: "subjectId inválido." });
+      }
+
       const { data: subjectData } = await supabase
         .from("materias")
         .select("nombre")
-        .eq("id", subjectId)
+        .eq("id", mid)
         .single();
 
-      const subjectName = subjectData?.nombre || "tu nueva materia";
+      const subjectName = subjectData?.nombre ?? "tu nueva materia";
 
+      const dedup = new Map<string, { email: string; name: string }>();
       for (const s of students) {
-        const emailExcel = s.email.trim().toLowerCase();
-        console.log(`Procesando alumno: ${emailExcel}`);
+        const emailExcel = String(s.email ?? "").trim().toLowerCase();
+        if (!emailExcel || dedup.has(emailExcel)) continue;
+        const name = String(s.name ?? "").trim() || emailExcel;
+        dedup.set(emailExcel, { email: emailExcel, name });
+      }
 
-        // Generar token único de 6 caracteres (ej. A4F9B2)
+      let mailed = 0;
+      let mailFailed = 0;
+      let skippedActivo = 0;
+      let dbErrors = 0;
+
+      for (const s of dedup.values()) {
+        const emailExcel = s.email;
         const token = crypto.randomBytes(3).toString("hex").toUpperCase();
 
         const { data: user } = await supabase
           .from("usuarios")
           .select("id")
           .eq("correo", emailExcel)
-          .single();
+          .maybeSingle();
 
-        // Inscribir a la materia guardando el token y el estatus
-        const { error: insertError } = await supabase
-          .from("inscripciones")
-          .insert([
-            {
-              materia_id: subjectId,
-              alumno_id: user ? user.id : null,
-              alumno_temp: user ? null : emailExcel,
+        const alumnoId = user?.id != null ? Number(user.id) : null;
+        let existing = await findInscripcionForStudent(mid, emailExcel, alumnoId);
+
+        let readyToMail = false;
+
+        if (existing) {
+          if (existing.estatus === "activo") {
+            skippedActivo++;
+            continue;
+          }
+          const { error: updErr } = await supabase
+            .from("inscripciones")
+            .update({
               token_acceso: token,
               estatus: "pendiente",
-            },
-          ]);
-
-        if (insertError) {
-          console.log(`Error Supabase con ${emailExcel}:`, insertError.message);
+              alumno_id: alumnoId,
+              alumno_temp: alumnoId ? null : emailExcel,
+            })
+            .eq("id", existing.id);
+          if (updErr) {
+            console.error("[students/bulk] update inscripción:", updErr);
+            dbErrors++;
+            continue;
+          }
+          readyToMail = true;
         } else {
-          // ✉️ ENVIAR EL CORREO SI SE GUARDÓ BIEN
-          // ✉️ ENVIAR EL CORREO VÍA API DE BREVO (A prueba de Render)
-          try {
-            const emailData = {
-              sender: {
-                name: "BUAP Academic",
-                email: "rojasdiego133@gmail.com",
-              }, // Debe ser el correo verificado en Brevo
-              to: [{ email: emailExcel, name: s.name }],
-              subject: `🔑 Código de acceso para: ${subjectName}`,
-              htmlContent: `
-                <div style="font-family: Arial, sans-serif; padding: 20px; color: #333; max-width: 600px; margin: 0 auto; border: 1px solid #e2e8f0; border-radius: 10px;">
-                  <h2 style="color: #1e3a8a; text-align: center;">¡Hola, ${s.name}!</h2>
-                  <p>Tu profesor te ha agregado a la clase de <strong>${subjectName}</strong> en el sistema BUAP Academic.</p>
-                  <p>Para desbloquear tu clase y ver tu horario, salón y pasar asistencia, ingresa el siguiente código de acceso en tu panel:</p>
-                  
-                  <div style="background-color: #eff6ff; padding: 20px; text-align: center; border-radius: 8px; margin: 30px 0; border: 2px dashed #93c5fd;">
-                    <h1 style="color: #2563eb; letter-spacing: 8px; margin: 0; font-size: 32px;">${token}</h1>
-                  </div>
-                  
-                  <p style="color: #64748b; font-size: 14px;">Si aún no tienes cuenta, regístrate con este mismo correo (${emailExcel}) en nuestra plataforma y tu materia te estará esperando.</p>
-                </div>
-              `,
-            };
+          const { error: insertError } = await supabase.from("inscripciones").insert([{
+            materia_id: mid,
+            alumno_id: alumnoId,
+            alumno_temp: alumnoId ? null : emailExcel,
+            token_acceso: token,
+            estatus: "pendiente",
+          }]);
 
-            // Hacemos la petición directa al servidor de Brevo usando HTTPS (Puerto 443 - Permitido en Render)
-            const response = await fetch(
-              "https://api.brevo.com/v3/smtp/email",
-              {
-                method: "POST",
-                headers: {
-                  accept: "application/json",
-                  "api-key": process.env.BREVO_API_KEY || "",
-                  "content-type": "application/json",
-                },
-                body: JSON.stringify(emailData),
-              },
-            );
-
-            if (!response.ok) {
-              const errorDetalle = await response.text();
-              console.log(
-                `Brevo rechazó el correo para ${emailExcel}:`,
-                errorDetalle,
-              );
+          if (insertError) {
+            if (insertError.code === "23505") {
+              existing = await findInscripcionForStudent(mid, emailExcel, alumnoId);
+              if (existing && existing.estatus !== "activo") {
+                const { error: updErr2 } = await supabase
+                  .from("inscripciones")
+                  .update({
+                    token_acceso: token,
+                    estatus: "pendiente",
+                    alumno_id: alumnoId,
+                    alumno_temp: alumnoId ? null : emailExcel,
+                  })
+                  .eq("id", existing.id);
+                if (!updErr2) readyToMail = true;
+                else {
+                  console.error("[students/bulk] update tras duplicado:", updErr2);
+                  dbErrors++;
+                }
+              } else if (existing?.estatus === "activo") {
+                skippedActivo++;
+              } else {
+                console.error("[students/bulk] insert duplicado sin fila recuperable:", insertError);
+                dbErrors++;
+              }
             } else {
-              console.log(`Inscrito y correo HTTP enviado a: ${emailExcel}`);
+              console.error("[students/bulk] insert:", insertError);
+              dbErrors++;
             }
-          } catch (mailError) {
-            console.log(
-              `Error de red conectando con Brevo para ${emailExcel}:`,
-              mailError,
-            );
+          } else {
+            readyToMail = true;
           }
         }
+
+        if (readyToMail) {
+          const ok = await sendAccessTokenEmail(emailExcel, s.name, subjectName, token);
+          if (ok) mailed++;
+          else mailFailed++;
+          await new Promise((r) => setTimeout(r, 150));
+        }
       }
-      res.json({ success: true });
+
+      return res.json({
+        success: true,
+        mailed,
+        mailFailed,
+        skippedActivo,
+        dbErrors,
+        totalInput: students.length,
+        totalUnique: dedup.size,
+      });
     } catch (error: any) {
-      console.log("[BACKEND] Error catastrófico:", error);
-      res.status(500).json({ success: false, message: error.message });
+      return res.status(500).json({ success: false, message: error.message });
     }
   });
 
-  // Obtener sesiones pasadas de una materia
-  app.get("/api/professor/subject/:id/attendance", async (req, res) => {
+  // Sesiones de asistencia de una materia
+  app.get("/api/professor/subject/:id/attendance", authMiddleware, requireRole("professor", "admin"), async (req, res) => {
     const { data: sesiones } = await supabase
       .from("sesiones_asistencia")
       .select("*")
       .eq("materia_id", req.params.id)
       .order("fecha_creacion", { ascending: false });
 
-    const sessions =
-      sesiones?.map((s) => ({
+    return res.json({
+      sessions: sesiones?.map((s) => ({
         id: s.id,
         subject_id: s.materia_id,
         token: s.token,
         expires_at: s.fecha_expiracion,
         created_at: s.fecha_creacion,
-      })) || [];
-
-    res.json({ sessions });
+      })) ?? [],
+    });
   });
 
-  // Actualizar asistencia manualmente
-  app.post("/api/professor/attendance/update", async (req, res) => {
+  // Lista de asistencia de una materia
+  app.get("/api/professor/subject/:id/attendance-list", authMiddleware, requireRole("professor", "admin"), async (req, res) => {
+    try {
+      const materia_id = Number(req.params.id);
+      const sessionId = req.query.session_id ? Number(req.query.session_id) : null;
+      const hoy = new Date().toLocaleDateString("en-CA", { timeZone: "America/Mexico_City" });
+
+      const { data: inscritos } = await supabase
+        .from("inscripciones")
+        .select(`alumno_id, estatus, usuarios (id, nombre, matricula, correo)`)
+        .eq("materia_id", materia_id)
+        .neq("estatus", "baja")
+        .not("alumno_id", "is", null);
+
+      let asistenciasQuery = supabase
+        .from("registros_asistencia")
+        .select("*")
+        .eq("materia_id", materia_id);
+
+      asistenciasQuery = sessionId
+        ? asistenciasQuery.eq("sesion_id", sessionId)
+        : asistenciasQuery.eq("fecha", hoy);
+
+      const { data: asistencias } = await asistenciasQuery;
+
+      const lista = inscritos?.map((inscripcion: any) => {
+        const alumno = inscripcion.usuarios;
+        const asistencia = asistencias?.find(
+          (a: any) => Number(a.alumno_id) === Number(alumno.id)
+        );
+        return {
+          id: alumno.id,
+          nombre: alumno.nombre,
+          matricula: alumno.matricula,
+          correo: alumno.correo,
+          estatus_inscripcion: inscripcion.estatus,
+          estado:
+            inscripcion.estatus !== "activo"
+              ? "pendiente_activar"
+              : asistencia
+              ? asistencia.estado
+              : "pendiente",
+        };
+      }) ?? [];
+
+      return res.json({ success: true, students: lista, session_id: sessionId });
+    } catch {
+      return res.status(500).json({ success: false, message: "Error al obtener la lista de asistencia." });
+    }
+  });
+
+  // Actualizar asistencia manual
+  app.post("/api/professor/attendance/update", authMiddleware, requireRole("professor", "admin"), async (req, res) => {
     const { sessionId, studentId, status } = req.body;
 
     if (status === "absent") {
@@ -396,36 +602,298 @@ async function startServer() {
         .from("registros_asistencia")
         .upsert({ sesion_id: sessionId, alumno_id: studentId, estado: status });
     }
-    res.json({ success: true });
+
+    return res.json({ success: true });
   });
-  // Validar QR escaneado contra alumnos inscritos en la materia
-  app.post("/api/attendance/validate-qr", async (req, res) => {
+
+  // ── Ponderaciones ─────────────────────────────────────────────────────────────
+
+  // Obtener ponderaciones
+  app.get("/api/professor/subject/:id/ponderaciones", authMiddleware, requireRole("professor", "admin"), async (req, res) => {
+    const { data, error } = await supabase
+      .from("ponderaciones")
+      .select("*")
+      .eq("materia_id", req.params.id)
+      .order("created_at", { ascending: true });
+
+    if (error) return res.status(500).json({ success: false, message: error.message });
+    return res.json({ success: true, ponderaciones: data });
+  });
+
+  // Agregar ponderación
+  app.post("/api/professor/subject/:id/ponderaciones", authMiddleware, requireRole("professor", "admin"), async (req, res) => {
+    const { nombre, porcentaje } = req.body;
+
+    if (!nombre?.trim()) {
+      return res.status(400).json({ success: false, message: "El nombre es requerido." });
+    }
+    if (!porcentaje || porcentaje <= 0 || porcentaje > 100) {
+      return res.status(400).json({ success: false, message: "El porcentaje debe ser entre 1 y 100." });
+    }
+
+    // Validar que no supere 100% total
+    const { data: existing } = await supabase
+      .from("ponderaciones")
+      .select("porcentaje")
+      .eq("materia_id", req.params.id);
+
+    const totalActual = existing?.reduce((a, c) => a + c.porcentaje, 0) ?? 0;
+    if (totalActual + Number(porcentaje) > 100) {
+      return res.status(400).json({
+        success: false,
+        message: `No puedes superar 100%. Porcentaje disponible: ${100 - totalActual}%.`,
+      });
+    }
+
+    const { data, error } = await supabase
+      .from("ponderaciones")
+      .insert([{ materia_id: req.params.id, nombre: nombre.trim(), porcentaje: Number(porcentaje) }])
+      .select()
+      .single();
+
+    if (error) return res.status(500).json({ success: false, message: error.message });
+    return res.json({ success: true, ponderacion: data });
+  });
+
+  // Eliminar ponderación
+  app.delete(
+    "/api/professor/subject/:subjectId/ponderaciones/:pondId",
+    authMiddleware,
+    requireRole("professor", "admin"),
+    async (req, res) => {
+      const pondId = Number(req.params.pondId);
+      const subjectId = Number(req.params.subjectId);
+
+      if (!pondId || !subjectId) {
+        return res.status(400).json({ success: false, message: "Parámetros inválidos." });
+      }
+
+      // Si existen calificaciones asociadas, Postgres puede bloquear el delete por FK.
+      // Borramos primero calificaciones de esta ponderación.
+      const { error: califDelError, count: califDeletedCount } = await supabase
+        .from("calificaciones")
+        .delete({ count: "exact" })
+        .eq("ponderacion_id", pondId);
+
+      if (califDelError) {
+        return res.status(500).json({ success: false, message: califDelError.message });
+      }
+
+      const { data: deleted, error } = await supabase
+        .from("ponderaciones")
+        .delete()
+        .eq("id", pondId)
+        .eq("materia_id", subjectId)
+        .select("*");
+
+      if (error) return res.status(500).json({ success: false, message: error.message });
+      if (!deleted || deleted.length === 0) {
+        return res.status(404).json({ success: false, message: "Ponderación no encontrada o ya eliminada." });
+      }
+      return res.json({ success: true, deletedPonderaciones: deleted.length, deletedCalificaciones: califDeletedCount ?? 0 });
+    }
+  );
+
+  // Subir o actualizar calificaciones (upsert masivo)
+  app.post("/api/professor/calificaciones", authMiddleware, requireRole("professor", "admin"), async (req, res) => {
+    const { calificaciones } = req.body;
+
+    if (!Array.isArray(calificaciones) || calificaciones.length === 0) {
+      return res.status(400).json({ success: false, message: "No se enviaron calificaciones." });
+    }
+
+    try {
+      const { error } = await supabase
+        .from("calificaciones")
+        .upsert(calificaciones, { onConflict: "ponderacion_id,alumno_id" });
+
+      if (error) throw error;
+
+      return res.json({ success: true, message: "Calificaciones actualizadas." });
+    } catch (error: any) {
+      return res.status(500).json({ success: false, message: error.message });
+    }
+  });
+
+  // Importar calificaciones por matrícula (para módulo de evaluación)
+  app.post(
+    "/api/professor/subject/:id/calificaciones/import",
+    authMiddleware,
+    requireRole("professor", "admin"),
+    async (req, res) => {
+      try {
+        const subjectId = Number(req.params.id);
+        const { rows } = req.body as {
+          rows: Array<{ matricula: string; calificaciones: Record<string, number | string> }>;
+        };
+
+        if (!subjectId || !Array.isArray(rows) || rows.length === 0) {
+          return res.status(400).json({ success: false, message: "No se recibieron filas para importar." });
+        }
+
+        const { data: ponds, error: pondErr } = await supabase
+          .from("ponderaciones")
+          .select("id, nombre, porcentaje")
+          .eq("materia_id", subjectId);
+        if (pondErr) return res.status(500).json({ success: false, message: pondErr.message });
+
+        const normalize = (s: string) =>
+          s
+            .toLowerCase()
+            .normalize("NFD")
+            .replace(/[\u0300-\u036f]/g, "")
+            .replace(/\s+/g, " ")
+            .trim();
+
+        const pondMap = new Map<string, number>();
+        (ponds ?? []).forEach((p: any) => pondMap.set(normalize(p.nombre), Number(p.id)));
+
+        const upserts: any[] = [];
+        const errors: Array<{ matricula: string; message: string }> = [];
+
+        for (const r of rows) {
+          const matricula = String(r.matricula ?? "").trim();
+          if (!matricula) continue;
+
+          const { data: alumno, error: alumnoErr } = await supabase
+            .from("usuarios")
+            .select("id, matricula")
+            .eq("matricula", matricula)
+            .maybeSingle();
+          if (alumnoErr || !alumno) {
+            errors.push({ matricula, message: "Matrícula no encontrada en usuarios." });
+            continue;
+          }
+
+          // opcional: validar inscripción en materia
+          const { data: insc } = await supabase
+            .from("inscripciones")
+            .select("id, estatus")
+            .eq("materia_id", subjectId)
+            .eq("alumno_id", alumno.id)
+            .maybeSingle();
+          if (!insc || insc.estatus !== "activo") {
+            errors.push({ matricula, message: "El alumno no está activo en esta materia." });
+            continue;
+          }
+
+          const califs = r.calificaciones ?? {};
+          for (const [pondName, scoreRaw] of Object.entries(califs)) {
+            const pondId = pondMap.get(normalize(pondName));
+            if (!pondId) continue;
+
+            const score = Number(scoreRaw);
+            if (Number.isNaN(score)) continue;
+
+            upserts.push({ ponderacion_id: pondId, alumno_id: alumno.id, puntaje: score });
+          }
+        }
+
+        if (upserts.length === 0) {
+          return res.status(400).json({
+            success: false,
+            message: "No se generaron calificaciones válidas. Revisa que los encabezados coincidan con tus ponderaciones y que las matrículas existan.",
+            errors,
+          });
+        }
+
+        const { error: upsertErr } = await supabase
+          .from("calificaciones")
+          .upsert(upserts, { onConflict: "ponderacion_id,alumno_id" });
+        if (upsertErr) return res.status(500).json({ success: false, message: upsertErr.message, errors });
+
+        return res.json({ success: true, imported: upserts.length, errors });
+      } catch (e: any) {
+        console.error("[calificaciones-import] Error:", e);
+        return res.status(500).json({ success: false, message: "Error interno al importar calificaciones." });
+      }
+    }
+  );
+
+  // Concentrado de calificaciones por materia (promedio redondeado)
+  app.get(
+    "/api/professor/subject/:id/concentrado",
+    authMiddleware,
+    requireRole("professor", "admin"),
+    async (req, res) => {
+      try {
+        const subjectId = Number(req.params.id);
+        if (!subjectId) return res.status(400).json({ success: false, message: "Materia inválida." });
+
+        const { data: ponds, error: pondErr } = await supabase
+          .from("ponderaciones")
+          .select("id, porcentaje")
+          .eq("materia_id", subjectId);
+        if (pondErr) return res.status(500).json({ success: false, message: pondErr.message });
+
+        const pondIds = (ponds ?? []).map((p: any) => Number(p.id));
+        const totalEval = (ponds ?? []).reduce((a: number, p: any) => a + Number(p.porcentaje ?? 0), 0);
+
+        const { data: inscritos, error: insErr } = await supabase
+          .from("inscripciones")
+          .select(`alumno_id, usuarios (id, nombre, matricula, correo)`)
+          .eq("materia_id", subjectId)
+          .eq("estatus", "activo")
+          .not("alumno_id", "is", null);
+        if (insErr) return res.status(500).json({ success: false, message: insErr.message });
+
+        const alumnoIds = (inscritos ?? []).map((i: any) => Number(i.alumno_id));
+        const { data: califs, error: calErr } = await supabase
+          .from("calificaciones")
+          .select("alumno_id, ponderacion_id, puntaje")
+          .in("alumno_id", alumnoIds)
+          .in("ponderacion_id", pondIds);
+        if (calErr) return res.status(500).json({ success: false, message: calErr.message });
+
+        const byAlumno = new Map<number, any[]>();
+        (califs ?? []).forEach((c: any) => {
+          const id = Number(c.alumno_id);
+          const arr = byAlumno.get(id) ?? [];
+          arr.push(c);
+          byAlumno.set(id, arr);
+        });
+
+        const students = (inscritos ?? []).map((i: any) => {
+          const u = i.usuarios;
+          const list = byAlumno.get(Number(i.alumno_id)) ?? [];
+          const sum = list.reduce((a: number, c: any) => a + Number(c.puntaje ?? 0), 0);
+          const rounded = Math.round(sum * 100) / 100; // 2 decimales
+          return {
+            id: u.id,
+            nombre: u.nombre,
+            matricula: u.matricula,
+            correo: u.correo,
+            promedio: rounded,
+          };
+        });
+
+        return res.json({ success: true, totalEvaluado: totalEval, students });
+      } catch (e: any) {
+        console.error("[concentrado] Error:", e);
+        return res.status(500).json({ success: false, message: "Error interno al obtener concentrado." });
+      }
+    }
+  );
+
+  // ── Asistencia QR ─────────────────────────────────────────────────────────────
+
+  // Validar QR
+  app.post("/api/attendance/validate-qr", authMiddleware, async (req, res) => {
     try {
       const { matricula, materia_id } = req.body;
-      console.log("VALIDANDO QR:", {
-        matricula,
-        matricula_limpia: String(matricula).trim(),
-        materia_id,
-      });
 
       if (!matricula || !materia_id) {
-        return res.status(400).json({
-          success: false,
-          message: "Faltan datos para validar el QR.",
-        });
+        return res.status(400).json({ success: false, message: "Faltan datos para validar el QR." });
       }
 
       const { data: alumno } = await supabase
         .from("usuarios")
         .select("id, nombre, correo, matricula, rol")
         .eq("matricula", String(matricula).trim())
-        .single();
+        .maybeSingle();
 
       if (!alumno) {
-        return res.status(404).json({
-          success: false,
-          message: "La matrícula no pertenece a ningún alumno.",
-        });
+        return res.status(404).json({ success: false, message: "La matrícula no pertenece a ningún alumno." });
       }
 
       const { data: inscripcion } = await supabase
@@ -436,38 +904,24 @@ async function startServer() {
         .maybeSingle();
 
       if (!inscripcion) {
-        return res.status(403).json({
-          success: false,
-          message: "El alumno no está inscrito en esta materia.",
-        });
+        return res.status(403).json({ success: false, message: "El alumno no está inscrito en esta materia." });
       }
-
       if (inscripcion.estatus !== "activo") {
         return res.status(403).json({
           success: false,
-          message: "El alumno aún no ha activado esta materia con su token.",
+          message: "El alumno aún no ha activado esta materia.",
           type: "inactive_subject",
         });
       }
-      const hoy = new Date().toLocaleDateString("en-CA", {
-        timeZone: "America/Mexico_City",
-      });
-      let { data: sesion } = await supabase
-        .from("sesiones_asistencia")
-        .select("*")
-        .eq("materia_id", Number(materia_id))
-        .eq("token", `QR-${materia_id}-${hoy}`)
-        .maybeSingle();
 
-      if (sesion?.cerrada) {
-        return res.status(409).json({
-          success: false,
-          message: "La asistencia de esta clase ya fue cerrada.",
-          type: "closed",
-        });
+      const hoy = new Date().toLocaleDateString("en-CA", { timeZone: "America/Mexico_City" });
+      const sesion = await getOrCreateSession(Number(materia_id), hoy);
+
+      if (sesion.cerrada) {
+        return res.status(409).json({ success: false, message: "La asistencia fue cerrada.", type: "closed" });
       }
 
-      const { data: asistenciaExistente, error: errorDuplicado } = await supabase
+      const { data: asistenciaExistente } = await supabase
         .from("registros_asistencia")
         .select("*")
         .eq("materia_id", Number(materia_id))
@@ -475,690 +929,267 @@ async function startServer() {
         .eq("fecha", hoy)
         .maybeSingle();
 
-      console.log("DUPLICADO BUSCADO:", {
-        materia_id: Number(materia_id),
-        alumno_id: Number(alumno.id),
-        fecha: hoy,
-        encontrado: asistenciaExistente,
-        error: errorDuplicado,
-      });
-
       if (asistenciaExistente) {
         if (asistenciaExistente.estado === "no_asistio") {
-          return res.status(409).json({
-            success: false,
-            message: "La asistencia de esta clase ya fue cerrada.",
-            type: "closed",
-          });
+          return res.status(409).json({ success: false, message: "La asistencia ya fue cerrada.", type: "closed" });
         }
-
         if (asistenciaExistente.estado === "presente") {
-          return res.status(409).json({
-            success: false,
-            message: "Este alumno ya registró asistencia hoy en esta materia.",
-            type: "duplicate",
-          });
+          return res.status(409).json({ success: false, message: "El alumno ya registró asistencia hoy.", type: "duplicate" });
         }
-
-        return res.status(409).json({
-          success: false,
-          message: "Este alumno ya tiene un registro de asistencia para hoy.",
-          type: "registered",
-        });
-      }
-      if (!sesion) {
-        const { data: nuevaSesion, error: sesionError } = await supabase
-          .from("sesiones_asistencia")
-          .insert({
-            materia_id: Number(materia_id),
-            token: `QR-${materia_id}-${hoy}`,
-            fecha_expiracion: new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString(),
-            cerrada: false,
-          })
-          .select()
-          .single();
-
-        if (sesionError) {
-          return res.status(500).json({
-            success: false,
-            message: "Error al crear sesión de asistencia.",
-          });
-        }
-
-        sesion = nuevaSesion;
+        return res.status(409).json({ success: false, message: "Ya tiene un registro para hoy.", type: "registered" });
       }
 
-      if (!sesion) {
-        const { data: nuevaSesion, error: sesionError } = await supabase
-          .from("sesiones_asistencia")
-          .insert({
-            materia_id: Number(materia_id),
-            token: `QR-${materia_id}-${hoy}`,
-            fecha_expiracion: new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString(),
-          })
-          .select()
-          .single();
-
-        if (sesionError) {
-          return res.status(500).json({
-            success: false,
-            message: "Error al crear sesión de asistencia.",
-          });
-        }
-
-        sesion = nuevaSesion;
-      }
-
-      const { error: insertError } = await supabase
-        .from("registros_asistencia")
-        .insert({
-          sesion_id: sesion.id,
-          alumno_id: alumno.id,
-          materia_id: Number(materia_id),
-          fecha: hoy,
-          estado: "presente",
-        });
+      const { error: insertError } = await supabase.from("registros_asistencia").insert({
+        sesion_id: sesion.id,
+        alumno_id: alumno.id,
+        materia_id: Number(materia_id),
+        fecha: hoy,
+        estado: "presente",
+      });
 
       if (insertError) {
-        return res.status(500).json({
-          success: false,
-          message: "Error al registrar la asistencia.",
-        });
+        return res.status(500).json({ success: false, message: "Error al registrar la asistencia." });
       }
 
-      return res.json({
-        success: true,
-        message: "Alumno validado correctamente.",
-        alumno,
-      });
+      return res.json({ success: true, message: "Asistencia registrada.", alumno });
     } catch (error) {
-      console.error("Error al validar QR:", error);
-      return res.status(500).json({
-        success: false,
-        message: "Error interno al validar el QR.",
-      });
+      console.error("[validate-qr] Error:", error);
+      return res.status(500).json({ success: false, message: "Error interno del servidor." });
     }
   });
-  app.get("/api/professor/subject/:id/attendance-list", async (req, res) => {
+
+  // Cerrar asistencia
+  app.post("/api/attendance/close", authMiddleware, requireRole("professor", "admin"), async (req, res) => {
     try {
-      const materia_id = Number(req.params.id);
+      const materia_id = Number(req.body.materia_id);
+      const hoy = new Date().toLocaleDateString("en-CA", { timeZone: "America/Mexico_City" });
 
-      const sessionId = req.query.session_id
-        ? Number(req.query.session_id)
-        : null;
+      const sesion = await getOrCreateSession(materia_id, hoy);
 
-      const hoy = new Date().toLocaleDateString("en-CA", {
-        timeZone: "America/Mexico_City",
-      });
+      if (sesion.cerrada) {
+        return res.json({ success: true, message: "La asistencia ya estaba cerrada." });
+      }
 
-      const { data: inscritos, error: inscritosError } = await supabase
+      const { data: inscritos } = await supabase
         .from("inscripciones")
-        .select(`
-        alumno_id,
-         estatus,
-  usuarios (
-    id,
-    nombre,
-    matricula,
-    correo
-  )
-`)
+        .select("alumno_id")
         .eq("materia_id", materia_id)
-        .neq("estatus", "baja")
+        .eq("estatus", "activo")
         .not("alumno_id", "is", null);
 
-      if (inscritosError) {
-        return res.status(500).json({
-          success: false,
-          message: inscritosError.message,
-        });
-      }
-
-      let asistenciasQuery = supabase
+      const { data: asistenciasHoy } = await supabase
         .from("registros_asistencia")
-        .select("*")
-        .eq("materia_id", materia_id);
+        .select("alumno_id")
+        .eq("materia_id", materia_id)
+        .eq("fecha", hoy);
 
-      if (sessionId) {
-        asistenciasQuery = asistenciasQuery.eq("sesion_id", sessionId);
-      } else {
-        asistenciasQuery = asistenciasQuery.eq("fecha", hoy);
+      const presentes = new Set(asistenciasHoy?.map((a) => Number(a.alumno_id)) ?? []);
+      const pendientes = inscritos?.filter((i) => !presentes.has(Number(i.alumno_id))) ?? [];
+
+      if (pendientes.length > 0) {
+        const ausentes = pendientes.map((p) => ({
+          sesion_id: sesion.id,
+          alumno_id: p.alumno_id,
+          materia_id,
+          fecha: hoy,
+          estado: "no_asistio",
+        }));
+        await supabase.from("registros_asistencia").insert(ausentes);
       }
 
-      const { data: asistencias, error: asistenciasError } =
-        await asistenciasQuery;
+      await supabase
+        .from("sesiones_asistencia")
+        .update({ cerrada: true, fecha_expiracion: new Date().toISOString() })
+        .eq("id", sesion.id);
 
-      if (asistenciasError) {
-        return res.status(500).json({
-          success: false,
-          message: asistenciasError.message,
-        });
-      }
-
-      const lista = inscritos?.map((inscripcion: any) => {
-        const alumno = inscripcion.usuarios;
-
-        const asistencia = asistencias?.find(
-          (a: any) => Number(a.alumno_id) === Number(alumno.id)
-        );
-
-        return {
-          id: alumno.id,
-          nombre: alumno.nombre,
-          matricula: alumno.matricula,
-          correo: alumno.correo,
-          estatus_inscripcion: inscripcion.estatus,
-          estado:
-            inscripcion.estatus !== "activo"
-              ? "pendiente_activar"
-              : asistencia
-                ? asistencia.estado
-                : "pendiente",
-        };
-      });
-
-      return res.json({
-        success: true,
-        students: lista || [],
-        session_id: sessionId,
-      });
+      return res.json({ success: true, message: "Asistencia cerrada correctamente." });
     } catch (error) {
-      console.error("Error al obtener lista de asistencia:", error);
-      return res.status(500).json({
-        success: false,
-        message: "Error al obtener lista de asistencia.",
-      });
+      console.error("[close-attendance] Error:", error);
+      return res.status(500).json({ success: false, message: "Error interno del servidor." });
     }
   });
 
+  // ── Estudiante ────────────────────────────────────────────────────────────────
 
-  // --- RUTAS DEL ESTUDIANTE ---
+  // Materias y calificaciones del alumno
+  app.get("/api/student/:id/subjects", authMiddleware, requireRole("student", "admin"), async (req, res) => {
+    const studentId = req.params.id;
 
-  // Obtener materias inscritas por el estudiante
-  app.get("/api/student/:id/subjects", async (req, res) => {
-    // Consulta avanzada: Busca las materias a través de las inscripciones
-    const { data: inscripciones } = await supabase
-      .from("inscripciones")
-      .select(
-        `
-        materias (
-          id, nrc, nombre, horario, salon, profesor_id,
-          usuarios!materias_profesor_id_fkey (nombre)
-        )
-      `,
-      )
-      .eq("alumno_id", req.params.id)
-      .eq("estatus", "activo");
+    try {
+      const { data: inscripciones } = await supabase
+        .from("inscripciones")
+        .select(`
+          materias (
+            id, nrc, nombre, horario, salon, profesor_id,
+            usuarios!materias_profesor_id_fkey (nombre)
+          )
+        `)
+        .eq("alumno_id", studentId)
+        .eq("estatus", "activo");
 
-    const subjects =
-      inscripciones?.map((i: any) => ({
-        id: i.materias.id,
-        nrc: i.materias.nrc,
-        name: i.materias.nombre,
-        schedule: i.materias.horario,
-        classroom: i.materias.salon,
-        professor_name: i.materias.usuarios?.nombre || "Sin asignar",
-      })) || [];
+      if (!inscripciones) return res.json({ subjects: [] });
 
-    res.json({ subjects });
+      const subjects = [];
+
+      for (const i of inscripciones) {
+        const mat = i.materias as any;
+
+        const { data: ponds } = await supabase
+          .from("ponderaciones")
+          .select("*")
+          .eq("materia_id", mat.id);
+
+        const { data: califs } = await supabase
+          .from("calificaciones")
+          .select("*")
+          .eq("alumno_id", studentId);
+
+        const evaluaciones =
+          ponds?.map((p: any) => {
+            const calificacion = califs?.find(
+              (c: any) => Number(c.ponderacion_id) === Number(p.id)
+            );
+            return {
+              id: p.id,
+              nombre: p.nombre,
+              porcentajeTotal: p.porcentaje,
+              porcentajeObtenido: calificacion ? Number(calificacion.puntaje) : 0,
+            };
+          }) ?? [];
+
+        subjects.push({
+          id: mat.id,
+          nrc: mat.nrc,
+          name: mat.nombre,
+          schedule: mat.horario,
+          classroom: mat.salon,
+          professor_name: mat.usuarios?.nombre ?? "Sin asignar",
+          evaluaciones,
+        });
+      }
+
+      return res.json({ subjects });
+    } catch {
+      return res.status(500).json({ success: false, message: "Error al cargar las materias del estudiante." });
+    }
   });
 
-  // Activar materia con token enviado por correo
-  app.post("/api/student/activate-subject", async (req, res) => {
+  // Activar materia con token
+  // FIX: busca por token únicamente para cubrir el caso donde el alumno
+  // no existía en la BD cuando el profesor lo agregó (alumno_id = null).
+  app.post("/api/student/activate-subject", authMiddleware, requireRole("student", "admin"), async (req, res) => {
     try {
       const { studentId, token } = req.body;
 
       if (!studentId || !token) {
-        return res.status(400).json({
-          success: false,
-          message: "Ingresa el token que recibiste por correo.",
-        });
+        return res.status(400).json({ success: false, message: "Faltan parámetros requeridos." });
       }
 
       const cleanToken = String(token).trim().toUpperCase();
 
-      const { data: inscripcion, error: searchError } = await supabase
+      // Buscar solo por token, sin filtrar por alumno_id.
+      // Ojo: si por cualquier razón existieran tokens duplicados, maybeSingle()
+      // sin LIMIT puede regresar data=null con error de "multiple rows".
+      const { data: inscripcion, error: insError } = await supabase
         .from("inscripciones")
-        .select(`
-        id,
-        materia_id,
-        alumno_id,
-        token_acceso,
-        estatus,
-        materias (
-          nombre
-        )
-      `)
-        .eq("alumno_id", Number(studentId))
-        .eq("token_acceso", cleanToken)
+        .select(`id, estatus, alumno_id, alumno_temp, token_acceso, materias(nombre)`)
+        // Soporta tokens antiguos guardados en minúsculas (por si existieran).
+        .in("token_acceso", [cleanToken, cleanToken.toLowerCase()])
+        .order("id", { ascending: false })
+        .limit(1)
         .maybeSingle();
 
-      if (searchError) {
-        return res.status(500).json({
-          success: false,
-          message: "Error al buscar el token.",
-        });
+      if (insError) {
+        console.error("[activate-subject] Error al buscar inscripción:", insError);
+        return res.status(500).json({ success: false, message: "Error interno al validar el token." });
       }
 
       if (!inscripcion) {
-        return res.status(404).json({
-          success: false,
-          message: "El token no es válido para este alumno.",
-        });
+        return res.status(404).json({ success: false, message: "Token inválido o ya fue utilizado." });
       }
-
       if (inscripcion.estatus === "activo") {
-        return res.status(409).json({
-          success: false,
-          message: "Esta materia ya fue activada anteriormente.",
-        });
+        return res.status(409).json({ success: false, message: "Esta materia ya está activada." });
+      }
+      if (!(inscripcion as any).token_acceso) {
+        return res.status(404).json({ success: false, message: "Token inválido o ya fue utilizado." });
       }
 
-      if (inscripcion.estatus === "baja") {
-        return res.status(403).json({
-          success: false,
-          message: "No puedes activar una materia en la que ya te diste de baja.",
-        });
+      // Si la inscripción no tiene alumno_id (alumno no existía cuando el
+      // profesor lo agregó), asignamos su id real en este momento.
+      // También anulamos el token para marcarlo como consumido y evitar reuso.
+      const updateData: any = { estatus: "activo", token_acceso: null };
+      if (!inscripcion.alumno_id) {
+        updateData.alumno_id = Number(studentId);
+        updateData.alumno_temp = null;
       }
 
-      const { error: updateError } = await supabase
-        .from("inscripciones")
-        .update({ estatus: "activo" })
-        .eq("id", inscripcion.id);
-
-      if (updateError) {
-        return res.status(500).json({
-          success: false,
-          message: "No se pudo activar la materia.",
-        });
+      const { error: updError } = await supabase.from("inscripciones").update(updateData).eq("id", inscripcion.id);
+      if (updError) {
+        console.error("[activate-subject] Error al activar inscripción:", updError);
+        return res.status(500).json({ success: false, message: "Error interno al activar la materia." });
       }
 
       return res.json({
         success: true,
         message: "Materia activada correctamente.",
-        subject: inscripcion.materias,
+        subject: (inscripcion as any).materias,
       });
-    } catch (error) {
-      console.error("Error al activar materia:", error);
-      return res.status(500).json({
-        success: false,
-        message: "Error interno al activar materia.",
-      });
+    } catch {
+      return res.status(500).json({ success: false, message: "Error interno al activar la materia." });
     }
   });
 
-  // Darse de baja de una materia
-  app.post("/api/student/drop-subject", async (req, res) => {
-    try {
-      const { studentId, subjectId } = req.body;
+  // Darse de baja
+  app.post("/api/student/drop-subject", authMiddleware, requireRole("student", "admin"), async (req, res) => {
+    const { studentId, subjectId } = req.body;
 
-      if (!studentId || !subjectId) {
-        return res.status(400).json({
-          success: false,
-          message: "Falta el alumno o la materia.",
-        });
-      }
-
-      // 1. Buscar inscripción del alumno en esa materia
-      const { data: inscripcion, error: searchError } = await supabase
-        .from("inscripciones")
-        .select("id, estatus")
-        .eq("alumno_id", Number(studentId))
-        .eq("materia_id", Number(subjectId))
-        .maybeSingle();
-
-      if (searchError) {
-        return res.status(500).json({
-          success: false,
-          message: "Error al buscar la inscripción.",
-        });
-      }
-
-      if (!inscripcion) {
-        return res.status(404).json({
-          success: false,
-          message: "No estás inscrito en esta materia.",
-        });
-      }
-
-      if (inscripcion.estatus === "baja") {
-        return res.status(409).json({
-          success: false,
-          message: "Ya te diste de baja de esta materia anteriormente.",
-        });
-      }
-
-      // 2. Buscar datos del alumno
-      const { data: alumno } = await supabase
-        .from("usuarios")
-        .select("id, nombre, correo, matricula")
-        .eq("id", Number(studentId))
-        .maybeSingle();
-
-      // 3. Buscar datos de la materia y del profesor
-      const { data: materia } = await supabase
-        .from("materias")
-        .select(`
-        id,
-        nombre,
-        nrc,
-        horario,
-        salon,
-        profesor_id,
-        usuarios!materias_profesor_id_fkey (
-          nombre,
-          correo
-        )
-      `)
-        .eq("id", Number(subjectId))
-        .maybeSingle();
-
-      // 4. Cambiar estatus a baja
-      const { error: updateError } = await supabase
-        .from("inscripciones")
-        .update({ estatus: "baja" })
-        .eq("id", inscripcion.id);
-
-      if (updateError) {
-        return res.status(500).json({
-          success: false,
-          message: "No se pudo realizar la baja.",
-        });
-      }
-
-      // 5. Enviar correo al profesor
-      try {
-        const profesor: any = materia?.usuarios;
-
-        if (alumno && materia && profesor?.correo) {
-          const emailData = {
-            sender: {
-              name: "BUAP Academic",
-              email: "rojasdiego133@gmail.com",
-            },
-            to: [
-              {
-                email: profesor.correo,
-                name: profesor.nombre || "Profesor",
-              },
-            ],
-            subject: `Baja de alumno en la materia ${materia.nombre}`,
-            htmlContent: `
-            <div style="font-family: Arial, sans-serif; padding: 20px; color: #333; max-width: 600px; margin: 0 auto; border: 1px solid #e2e8f0; border-radius: 10px;">
-              <h2 style="color: #1e3a8a;">Notificación de baja de materia</h2>
-
-              <p>Hola, <strong>${profesor.nombre || "Profesor"}</strong>.</p>
-
-              <p>Se informa que el siguiente alumno se ha dado de baja de una materia:</p>
-
-              <div style="background-color: #f8fafc; padding: 15px; border-radius: 8px; margin: 20px 0;">
-                <p><strong>Materia:</strong> ${materia.nombre}</p>
-                <p><strong>NRC:</strong> ${materia.nrc || "No registrado"}</p>
-                <p><strong>Alumno:</strong> ${alumno.nombre}</p>
-                <p><strong>Matrícula:</strong> ${alumno.matricula || "No registrada"}</p>
-                <p><strong>Correo del alumno:</strong> ${alumno.correo}</p>
-              </div>
-
-              <p style="font-size: 14px; color: #64748b;">
-                Esta baja fue registrada automáticamente en el sistema académico.
-              </p>
-            </div>
-          `,
-          };
-
-          const response = await fetch("https://api.brevo.com/v3/smtp/email", {
-            method: "POST",
-            headers: {
-              accept: "application/json",
-              "api-key": process.env.BREVO_API_KEY || "",
-              "content-type": "application/json",
-            },
-            body: JSON.stringify(emailData),
-          });
-
-          if (!response.ok) {
-            const errorDetalle = await response.text();
-            console.log("Brevo rechazó el correo de baja:", errorDetalle);
-          } else {
-            console.log(`Correo de baja enviado al profesor: ${profesor.correo}`);
-          }
-        } else {
-          console.log("No se envió correo de baja: faltan datos del alumno, materia o profesor.");
-        }
-      } catch (mailError) {
-        console.log("Error al enviar correo de baja al profesor:", mailError);
-      }
-
-      return res.json({
-        success: true,
-        message: "Te diste de baja correctamente de la materia.",
-      });
-    } catch (error) {
-      console.error("Error al darse de baja:", error);
-      return res.status(500).json({
-        success: false,
-        message: "Error interno al darse de baja.",
-      });
+    if (!studentId || !subjectId) {
+      return res.status(400).json({ success: false, message: "Faltan parámetros requeridos." });
     }
+
+    const { error } = await supabase
+      .from("inscripciones")
+      .update({ estatus: "baja" })
+      .eq("alumno_id", Number(studentId))
+      .eq("materia_id", Number(subjectId));
+
+    if (error) return res.status(500).json({ success: false, message: error.message });
+    return res.json({ success: true, message: "Baja registrada correctamente." });
   });
-  // Registrar asistencia 
-  app.post("/api/student/attend", async (req, res) => {
+
+  // Registrar asistencia por token (flujo legacy)
+  app.post("/api/student/attend", authMiddleware, requireRole("student"), async (req, res) => {
     const { studentId, token } = req.body;
 
-    // 1. Buscar la sesión por el token
     const { data: session } = await supabase
       .from("sesiones_asistencia")
       .select("*")
       .eq("token", token)
       .single();
 
-    if (!session)
-      return res
-        .status(404)
-        .json({ success: false, message: "Código inválido" });
-
-    // 2. Revisar si expiró
-    if (new Date(session.fecha_expiracion) < new Date()) {
-      return res
-        .status(400)
-        .json({ success: false, message: "El código ha expirado" });
+    if (!session || new Date(session.fecha_expiracion) < new Date()) {
+      return res.status(400).json({ success: false, message: "Código inválido o expirado." });
     }
 
-    // 3. Confirmar que el alumno está en esa clase
-    const { data: enrollment } = await supabase
-      .from("inscripciones")
-      .select("*")
-      .eq("alumno_id", studentId)
-      .eq("materia_id", session.materia_id)
-      .single();
-
-    if (!enrollment)
-      return res
-        .status(403)
-        .json({ success: false, message: "No estás inscrito en esta clase" });
-
-    // 4. Guardar la asistencia
-    const { error } = await supabase
+    await supabase
       .from("registros_asistencia")
-      .upsert({
-        sesion_id: session.id,
-        alumno_id: studentId,
-        estado: "present",
-      });
+      .upsert({ sesion_id: session.id, alumno_id: studentId, estado: "presente" });
 
-    if (error)
-      return res.status(500).json({ success: false, message: error.message });
-    res.json({ success: true, message: "Asistencia registrada correctamente" });
-  });
-  app.post("/api/attendance/close", async (req, res) => {
-    try {
-      const { materia_id } = req.body;
-
-      if (!materia_id) {
-        return res.status(400).json({
-          success: false,
-          message: "Falta la materia.",
-        });
-      }
-
-      const materiaIdNumber = Number(materia_id);
-
-      const hoy = new Date().toLocaleDateString("en-CA", {
-        timeZone: "America/Mexico_City",
-      });
-
-      // 1. Buscar o crear la sesión del día
-      let { data: sesion, error: sesionBusquedaError } = await supabase
-        .from("sesiones_asistencia")
-        .select("*")
-        .eq("materia_id", materiaIdNumber)
-        .eq("token", `QR-${materiaIdNumber}-${hoy}`)
-        .maybeSingle();
-
-      if (sesionBusquedaError) {
-        return res.status(500).json({
-          success: false,
-          message: "Error al buscar la sesión de asistencia.",
-        });
-      }
-
-      if (!sesion) {
-        const { data: nuevaSesion, error: sesionError } = await supabase
-          .from("sesiones_asistencia")
-          .insert({
-            materia_id: materiaIdNumber,
-            token: `QR-${materiaIdNumber}-${hoy}`,
-            fecha_expiracion: new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString(),
-            cerrada: false,
-          })
-          .select()
-          .single();
-
-        if (sesionError || !nuevaSesion) {
-          return res.status(500).json({
-            success: false,
-            message: "Error al crear la sesión de asistencia.",
-          });
-        }
-
-        sesion = nuevaSesion;
-      }
-
-      // 2. Si ya estaba cerrada, no duplicar nada
-      if (sesion.cerrada) {
-        return res.json({
-          success: true,
-          message: "La asistencia ya estaba cerrada.",
-        });
-      }
-
-      // 3. Obtener solo alumnos activos
-      const { data: inscritos, error: inscritosError } = await supabase
-        .from("inscripciones")
-        .select("alumno_id")
-        .eq("materia_id", materiaIdNumber)
-        .eq("estatus", "activo")
-        .not("alumno_id", "is", null);
-
-      if (inscritosError) {
-        return res.status(500).json({
-          success: false,
-          message: "Error al obtener alumnos activos.",
-        });
-      }
-
-      // 4. Obtener asistencias ya registradas hoy
-      const { data: asistenciasHoy, error: asistenciasError } = await supabase
-        .from("registros_asistencia")
-        .select("alumno_id")
-        .eq("materia_id", materiaIdNumber)
-        .eq("fecha", hoy);
-
-      if (asistenciasError) {
-        return res.status(500).json({
-          success: false,
-          message: "Error al obtener asistencias de hoy.",
-        });
-      }
-
-      const presentes = new Set(
-        asistenciasHoy?.map((a) => Number(a.alumno_id)) || []
-      );
-
-      const pendientes =
-        inscritos?.filter((i) => !presentes.has(Number(i.alumno_id))) || [];
-
-      // 5. Insertar No asistió solo para activos que no pasaron lista
-      if (pendientes.length > 0) {
-        const ausentes = pendientes.map((p) => ({
-          sesion_id: sesion.id,
-          alumno_id: p.alumno_id,
-          materia_id: materiaIdNumber,
-          fecha: hoy,
-          estado: "no_asistio",
-        }));
-
-        const { error: insertError } = await supabase
-          .from("registros_asistencia")
-          .insert(ausentes);
-
-        if (insertError) {
-          return res.status(500).json({
-            success: false,
-            message: insertError.message,
-          });
-        }
-      }
-
-      // 6. Marcar la sesión como cerrada SIEMPRE
-      const { error: closeError } = await supabase
-        .from("sesiones_asistencia")
-        .update({
-          cerrada: true,
-          fecha_expiracion: new Date().toISOString(),
-        })
-        .eq("id", sesion.id);
-
-      if (closeError) {
-        return res.status(500).json({
-          success: false,
-          message: "Error al marcar la asistencia como cerrada.",
-        });
-      }
-
-      return res.json({
-        success: true,
-        message:
-          pendientes.length > 0
-            ? "Asistencia cerrada correctamente."
-            : "Asistencia cerrada correctamente. No había alumnos activos pendientes.",
-      });
-    } catch (error) {
-      console.error("Error al cerrar asistencia:", error);
-      return res.status(500).json({
-        success: false,
-        message: "Error interno al cerrar asistencia.",
-      });
-    }
+    return res.json({ success: true, message: "Asistencia registrada." });
   });
 
-  // --- MIDDLEWARE DE VITE (No tocar) ---
+  // ── Vite middleware ───────────────────────────────────────────────────────────
+
   if (process.env.NODE_ENV !== "production") {
-    const vite = await createViteServer({
-      server: { middlewareMode: true },
-      appType: "spa",
-    });
+    const vite = await createViteServer({ server: { middlewareMode: true }, appType: "spa" });
     app.use(vite.middlewares);
   } else {
-    // MODO PRODUCCIÓN: Servir los archivos compilados
     app.use(express.static(path.resolve("dist")));
-    app.get("*", (req, res) => {
-      res.sendFile(path.resolve("dist", "index.html"));
-    });
+    app.get("*", (_req, res) => res.sendFile(path.resolve("dist", "index.html")));
   }
 
   app.listen(PORT, "0.0.0.0", () => {
-    console.log(`Server running on http://localhost:${PORT}`);
+    console.log(`[server] Corriendo en http://localhost:${PORT}`);
   });
 }
 

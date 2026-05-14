@@ -6,10 +6,13 @@ import dotenv from 'dotenv';
 dotenv.config();
 
 const supabaseUrl = process.env.SUPABASE_URL;
-const supabaseKey = process.env.SUPABASE_KEY;
+// En el backend conviene usar la Service Role Key para evitar bloqueos por RLS
+// (p. ej. deletes que "aparentan" funcionar pero no impactan BD).
+// Si no está disponible, usamos SUPABASE_KEY como fallback.
+const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY ?? process.env.SUPABASE_KEY;
 
 if (!supabaseUrl || !supabaseKey) {
-  throw new Error('¡Faltan las credenciales de Supabase en el archivo .env.local!');
+  throw new Error('¡Faltan SUPABASE_URL y SUPABASE_KEY (o SUPABASE_SERVICE_ROLE_KEY) en el .env.local!');
 }
 
 // Creamos la conexión principal (el cliente) que usaremos en todo el proyecto

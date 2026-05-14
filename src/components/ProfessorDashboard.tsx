@@ -1,8 +1,10 @@
-import { useState, useEffect } from 'react';
-import { Users, Clock, Calendar, Upload, CheckSquare, ArrowLeft, MapPin, Loader2, CheckCircle, AlertCircle, QrCode, X, Percent } from 'lucide-react';
-import { motion } from 'motion/react';
+import { useState, useEffect, useCallback } from 'react';
+import { Users, Clock, Calendar, Upload, CheckSquare, ArrowLeft, MapPin, Loader2, CheckCircle, AlertCircle, QrCode, X, Percent, Plus } from 'lucide-react';
+import { motion, AnimatePresence } from 'motion/react';
 import QRScanner from './QRScanner';
 import * as XLSX from 'xlsx';
+
+// ─── Types ────────────────────────────────────────────────────────────────────
 
 interface Subject {
   id: number;
@@ -12,58 +14,136 @@ interface Subject {
   classroom: string;
 }
 
+interface AttendanceStudent {
+  id: number;
+  nombre: string;
+  matricula: string;
+  correo: string;
+  estatus_inscripcion: string;
+  estado: 'presente' | 'no_asistio' | 'pendiente' | 'pendiente_activar';
+}
+
+interface Session {
+  id: number;
+  subject_id: number;
+  token: string;
+  expires_at: string;
+  created_at: string;
+}
+
+interface Ponderacion {
+  id: number;
+  nombre: string;
+  porcentaje: number;
+}
+
+interface FeedbackMsg {
+  text: string;
+  type: 'success' | 'error' | '';
+}
+
+interface ConfirmModal {
+  open: boolean;
+  title: string;
+  description: string;
+  onConfirm: () => void;
+}
+
+// ─── Hooks & helpers ──────────────────────────────────────────────────────────
+
+function useConfirmModal() {
+  const [modal, setModal] = useState<ConfirmModal>({
+    open: false, title: '', description: '', onConfirm: () => {},
+  });
+
+  const confirm = (title: string, description: string): Promise<boolean> =>
+    new Promise((resolve) => {
+      setModal({
+        open: true, title, description,
+        onConfirm: () => { setModal((m) => ({ ...m, open: false })); resolve(true); },
+      });
+    });
+
+  const cancel = () => { setModal((m) => ({ ...m, open: false })); };
+
+  return { modal, confirm, cancel };
+}
+
+function playSound(type: 'success' | 'error' | 'warning') {
+  const map = { success: '/public/success.mp3', error: '/public/error.mp3', warning: '/public/warning.mp3' };
+  new Audio(map[type]).play().catch(() => {});
+}
+
+// ─── ConfirmModal component ───────────────────────────────────────────────────
+
+function ConfirmModal({ modal, onCancel }: { modal: ConfirmModal; onCancel: () => void }) {
+  if (!modal.open) return null;
+  return (
+    <div className="fixed inset-0 bg-black/40 z-[60] flex items-center justify-center p-4">
+      <motion.div
+        initial={{ opacity: 0, scale: 0.95 }}
+        animate={{ opacity: 1, scale: 1 }}
+        className="bg-white rounded-2xl p-6 w-full max-w-sm shadow-2xl border border-slate-100"
+      >
+        <h3 className="text-lg font-bold text-slate-800 mb-2">{modal.title}</h3>
+        <p className="text-sm text-slate-500 mb-6">{modal.description}</p>
+        <div className="flex gap-3">
+          <button
+            onClick={onCancel}
+            className="flex-1 bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold py-2.5 rounded-xl transition-colors text-sm"
+          >
+            Cancelar
+          </button>
+          <button
+            onClick={modal.onConfirm}
+            className="flex-1 bg-red-600 hover:bg-red-700 text-white font-semibold py-2.5 rounded-xl transition-colors text-sm"
+          >
+            Confirmar
+          </button>
+        </div>
+      </motion.div>
+    </div>
+  );
+}
+
+// ─── ProfessorDashboard (root) ────────────────────────────────────────────────
+
 interface ProfessorDashboardProps {
   user: any;
 }
 
-const SHOW_TOKEN_FLOW = false;
-
 export default function ProfessorDashboard({ user }: ProfessorDashboardProps) {
-  // MOCK DATA
-  const [subjects, setSubjects] = useState<Subject[]>([
-    {
-      id: 1,
-      nrc: "12345",
-      name: "Desarrollo Web Fullstack",
-      schedule: "Lunes y Miércoles / 10:00 - 12:00",
-      classroom: "CCO-101 / LAB-2"
-    }
-  ]);
+  const [subjects, setSubjects] = useState<Subject[]>([]);
   const [selectedSubject, setSelectedSubject] = useState<Subject | null>(null);
-  const [loading, setLoading] = useState(false);
-  
+  const [loading, setLoading] = useState(true);
   const [scannerSubject, setScannerSubject] = useState<Subject | null>(null);
-  const [lastScan, setLastScan] = useState<{
-    text: string;
-    type: "success" | "error" | "warning" | "closed";
-  } | null>(null);
+  const [lastScan, setLastScan] = useState<{ text: string; type: 'success' | 'error' | 'warning' | 'closed' } | null>(null);
   const [attendanceRefreshKey, setAttendanceRefreshKey] = useState(0);
 
-  const playSound = (type: "success" | "error" | "warning") => {
-    const soundMap = {
-      success: "/public/success.mp3",
-      error: "/public/error.mp3",
-      warning: "/public/warning.mp3",
-    };
-    const audio = new Audio(soundMap[type]);
-    audio.play().catch(() => { });
-  };
-
-  useEffect(() => {
-    // fetchSubjects(); // Comentado para pruebas
-  }, [user.id]);
-
-  const fetchSubjects = async () => {
+  const fetchSubjects = useCallback(async () => {
+    setLoading(true);
     try {
-      const res = await fetch(`/api/professor/${user.id}/subjects`);
+      const res = await fetch(`/api/professor/${user.id}/subjects`, {
+        headers: { Authorization: `Bearer ${localStorage.getItem('token')}` },
+      });
+      if (!res.ok) throw new Error('Error al cargar materias');
       const data = await res.json();
-      setSubjects(data.subjects);
+      setSubjects(data.subjects || []);
     } catch (err) {
-      console.error(err);
+      console.error('[ProfessorDashboard] fetchSubjects:', err);
     } finally {
       setLoading(false);
     }
-  };
+  }, [user.id]);
+
+  useEffect(() => { fetchSubjects(); }, [fetchSubjects]);
+
+  // Auto-dismiss toast
+  useEffect(() => {
+    if (!lastScan) return;
+    const t = setTimeout(() => setLastScan(null), 3500);
+    return () => clearTimeout(t);
+  }, [lastScan]);
 
   return (
     <div className="p-8 max-w-7xl mx-auto">
@@ -89,8 +169,8 @@ export default function ProfessorDashboard({ user }: ProfessorDashboardProps) {
               <p className="text-slate-500 mt-2">Cargando materias...</p>
             </div>
           ) : subjects.length === 0 ? (
-            <div className="col-span-3 text-center py-12 bg-white rounded-2xl border border-blue-100">
-              <p className="text-slate-500">No hay materias asignadas aún.</p>
+            <div className="col-span-3 text-center py-12 bg-white rounded-2xl border border-blue-100 shadow-sm">
+              <p className="text-slate-500 font-medium">No tienes materias asignadas aún.</p>
             </div>
           ) : (
             subjects.map((subject) => (
@@ -117,9 +197,7 @@ export default function ProfessorDashboard({ user }: ProfessorDashboardProps) {
                     </div>
                     <div className="flex flex-wrap gap-1.5 pl-6">
                       {(subject.schedule || '').split(' / ').filter(Boolean).map((time, i) => (
-                        <span key={i} className="bg-slate-100 text-slate-600 px-2 py-1 rounded-md text-xs border border-slate-200">
-                          {time}
-                        </span>
+                        <span key={i} className="bg-slate-100 text-slate-600 px-2 py-1 rounded-md text-xs border border-slate-200">{time}</span>
                       ))}
                     </div>
                   </div>
@@ -129,106 +207,117 @@ export default function ProfessorDashboard({ user }: ProfessorDashboardProps) {
                     </div>
                     <div className="flex flex-wrap gap-1.5 pl-6">
                       {(subject.classroom || '').split(' / ').filter(Boolean).map((room, i) => (
-                        <span key={i} className="bg-slate-100 text-slate-600 px-2 py-1 rounded-md text-xs border border-slate-200">
-                          {room}
-                        </span>
+                        <span key={i} className="bg-slate-100 text-slate-600 px-2 py-1 rounded-md text-xs border border-slate-200">{room}</span>
                       ))}
                     </div>
                   </div>
                 </div>
                 <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setScannerSubject(subject);
-                  }}
-                  className="mt-5 w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2 rounded-xl flex items-center justify-center gap-2"
+                  onClick={(e) => { e.stopPropagation(); setScannerSubject(subject); }}
+                  className="mt-5 w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2 rounded-xl flex items-center justify-center gap-2 transition-all shadow-md"
                 >
-                  <QrCode className="w-4 h-4" />
-                  Escanear QR
+                  <QrCode className="w-4 h-4" /> Escanear QR
                 </button>
               </motion.div>
             ))
           )}
         </div>
       )}
-      
-      {/* Modal QR Scanner */}
-      {scannerSubject && (
-        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl p-6 w-full max-w-md shadow-xl">
-            <div className="flex justify-between items-center mb-4">
-              <div>
-                <h2 className="text-xl font-bold text-blue-900">Escanear QR</h2>
-                <p className="text-sm text-slate-500">Materia: {scannerSubject.name}</p>
+
+      {/* ── QR Scanner Modal ── */}
+      <AnimatePresence>
+        {scannerSubject && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4"
+          >
+            <motion.div
+              initial={{ scale: 0.95 }}
+              animate={{ scale: 1 }}
+              exit={{ scale: 0.95 }}
+              className="bg-white rounded-2xl p-6 w-full max-w-md shadow-xl"
+            >
+              <div className="flex justify-between items-center mb-4">
+                <div>
+                  <h2 className="text-xl font-bold text-blue-900">Escanear QR</h2>
+                  <p className="text-sm text-slate-500">Materia: {scannerSubject.name}</p>
+                </div>
+                <button
+                  onClick={() => { setScannerSubject(null); setLastScan(null); }}
+                  className="text-slate-500 hover:text-red-500 transition-colors"
+                >
+                  <X className="w-6 h-6" />
+                </button>
               </div>
-              <button
-                onClick={() => { setScannerSubject(null); setLastScan(null); }}
-                className="text-slate-500 hover:text-red-500"
-              >
-                <X className="w-6 h-6" />
-              </button>
-            </div>
 
-            <QRScanner
-              onScan={async (matricula) => {
-                try {
-                  const response = await fetch("/api/attendance/validate-qr", {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ matricula, materia_id: scannerSubject.id }),
-                  });
+              <QRScanner
+                onScan={async (matricula) => {
+                  try {
+                    const response = await fetch('/api/attendance/validate-qr', {
+                      method: 'POST',
+                      headers: {
+                        'Content-Type': 'application/json',
+                        Authorization: `Bearer ${localStorage.getItem('token')}`,
+                      },
+                      body: JSON.stringify({ matricula, materia_id: scannerSubject.id }),
+                    });
+                    const result = await response.json();
 
-                  const result = await response.json();
-
-                  if (!result.success) {
-                    if (result.type === "closed") {
-                      playSound("error");
-                      setLastScan({ text: `🔒 ${result.message}`, type: "closed" });
+                    if (!result.success) {
+                      if (result.type === 'closed') {
+                        playSound('error');
+                        setLastScan({ text: `${result.message}`, type: 'closed' });
+                        return;
+                      }
+                      if (response.status === 409) {
+                        playSound('warning');
+                        setLastScan({ text: ` ${result.message}`, type: 'warning' });
+                        return;
+                      }
+                      playSound('error');
+                      setLastScan({ text: ` ${result.message}`, type: 'error' });
                       return;
                     }
-                    if (response.status === 409) {
-                      playSound("warning");
-                      setLastScan({ text: `⚠️ ${result.message}`, type: "warning" });
-                      return;
-                    }
 
-                    playSound("error");
-                    setLastScan({ text: `❌ ${result.message}`, type: "error" });
-                    return;
+                    playSound('success');
+                    setLastScan({ text: `${result.alumno.nombre} validado`, type: 'success' });
+                    setAttendanceRefreshKey((prev) => prev + 1);
+                  } catch {
+                    playSound('error');
+                    setLastScan({ text: ' Error al validar el QR', type: 'error' });
                   }
+                }}
+              />
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
-                  playSound("success");
-                  setLastScan({ text: `✅ ${result.alumno.nombre} validado`, type: "success" });
-                  setAttendanceRefreshKey((prev) => prev + 1);
-                } catch (error) {
-                  console.error(error);
-                  playSound("error");
-                  setLastScan({ text: "❌ Error al validar el QR", type: "error" });
-                }
-              }}
-            />
-          </div>
-        </div>
-      )}
-
-      {/* Toast Notificación */}
-      {lastScan && (
-        <motion.div
-          initial={{ opacity: 0, y: 20, scale: 0.95 }}
-          animate={{ opacity: 1, y: 0, scale: 1 }}
-          className={`fixed bottom-6 right-6 text-white px-5 py-3 rounded-xl shadow-lg z-50 max-w-sm flex items-center gap-2 ${
-            lastScan.type === "success" ? "bg-green-600"
-            : lastScan.type === "warning" ? "bg-yellow-600"
-            : lastScan.type === "closed" ? "bg-slate-800"
-            : "bg-red-600"
+      {/* ── Toast ── */}
+      <AnimatePresence>
+        {lastScan && (
+          <motion.div
+            initial={{ opacity: 0, y: 20, scale: 0.95 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: 20, scale: 0.95 }}
+            className={`fixed bottom-6 right-6 text-white px-5 py-3 rounded-xl shadow-lg z-50 max-w-sm flex items-center gap-2 ${
+              lastScan.type === 'success' ? 'bg-green-600'
+              : lastScan.type === 'warning' ? 'bg-yellow-600'
+              : lastScan.type === 'closed' ? 'bg-slate-800'
+              : 'bg-red-600'
             }`}
-        >
-          <span>{lastScan.text}</span>
-        </motion.div>
-      )}
+          >
+            <span>{lastScan.text}</span>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }
+
+// ─── SubjectDetail ────────────────────────────────────────────────────────────
 
 function SubjectDetail({
   subject,
@@ -242,117 +331,290 @@ function SubjectDetail({
   refreshKey: number;
 }) {
   const [activeTab, setActiveTab] = useState<'asistencia' | 'alumnos' | 'evaluacion'>('asistencia');
-  const [ponderaciones, setPonderaciones] = useState([
-    { id: 1, nombre: 'Examen Parcial', porcentaje: 40 },
-    { id: 2, nombre: 'Tareas', porcentaje: 30 },
-    { id: 3, nombre: 'Proyecto Final', porcentaje: 30 },
-  ]);
 
-  const [token, setToken] = useState<string | null>(null);
-  const [expiresAt, setExpiresAt] = useState<string | null>(null);
-  const [attendanceStudents, setAttendanceStudents] = useState<any[]>([]);
-  const [sessions, setSessions] = useState<any[]>([]);
+  return (
+    <div className="space-y-6">
+      <button
+        onClick={onBack}
+        className="flex items-center gap-2 text-slate-500 hover:text-blue-600 transition-colors font-medium mb-2"
+      >
+        <ArrowLeft className="w-4 h-4" /> Volver a mis materias
+      </button>
+
+      {/* Header */}
+      <div className="bg-blue-900 text-white p-8 rounded-3xl shadow-lg relative overflow-hidden">
+        <div className="relative z-10">
+          <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-6">
+            <h2 className="text-3xl font-bold">{subject.name}</h2>
+            <span className="bg-blue-800 text-blue-100 text-sm font-bold px-4 py-2 rounded-full border border-blue-700 w-fit">
+              NRC: {subject.nrc}
+            </span>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="bg-white/10 p-4 rounded-2xl border border-white/10 backdrop-blur-sm">
+              <h3 className="text-blue-200 text-xs uppercase tracking-wider font-semibold mb-3 flex items-center gap-2">
+                <Clock className="w-4 h-4" /> Horarios de Clase
+              </h3>
+              <div className="flex flex-wrap gap-2">
+                {(subject.schedule || '').split(' / ').filter(Boolean).map((time, i) => (
+                  <span key={i} className="bg-blue-800 text-blue-50 px-3 py-1.5 rounded-lg text-sm font-medium shadow-sm border border-blue-700/50">{time}</span>
+                ))}
+              </div>
+            </div>
+            <div className="bg-white/10 p-4 rounded-2xl border border-white/10 backdrop-blur-sm">
+              <h3 className="text-blue-200 text-xs uppercase tracking-wider font-semibold mb-3 flex items-center gap-2">
+                <MapPin className="w-4 h-4" /> Salones Asignados
+              </h3>
+              <div className="flex flex-wrap gap-2">
+                {(subject.classroom || '').split(' / ').filter(Boolean).map((room, i) => (
+                  <span key={i} className="bg-blue-800 text-blue-50 px-3 py-1.5 rounded-lg text-sm font-medium shadow-sm border border-blue-700/50">{room}</span>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+        <div className="absolute right-0 top-0 w-64 h-64 bg-blue-500 rounded-full blur-3xl opacity-20 transform translate-x-1/3 -translate-y-1/3" />
+      </div>
+
+      {/* Tabs */}
+      <div className="flex flex-wrap gap-2 bg-white p-1.5 rounded-xl shadow-sm border border-blue-100 w-fit">
+        {(['asistencia', 'alumnos', 'evaluacion'] as const).map((tab) => (
+          <button
+            key={tab}
+            onClick={() => setActiveTab(tab)}
+            className={`px-5 py-2.5 text-sm font-semibold rounded-lg transition-all ${
+              activeTab === tab ? 'bg-blue-600 text-white shadow-md' : 'text-slate-600 hover:text-blue-700 hover:bg-blue-50'
+            }`}
+          >
+            {tab === 'asistencia' ? 'Asistencia' : tab === 'alumnos' ? 'Gestión de Alumnos' : 'Evaluación y Ponderaciones'}
+          </button>
+        ))}
+      </div>
+
+      {/* Tab content */}
+      <AnimatePresence mode="wait">
+        {activeTab === 'asistencia' && (
+          <motion.div key="asistencia" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}>
+            <AttendanceTab subject={subject} onScanClick={onScanClick} refreshKey={refreshKey} />
+          </motion.div>
+        )}
+        {activeTab === 'alumnos' && (
+          <motion.div key="alumnos" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}>
+            <StudentsTab subject={subject} />
+          </motion.div>
+        )}
+        {activeTab === 'evaluacion' && (
+          <motion.div key="evaluacion" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}>
+            <EvaluationTab subject={subject} />
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
+  );
+}
+
+// ─── AttendanceTab ────────────────────────────────────────────────────────────
+
+function AttendanceTab({ subject, onScanClick, refreshKey }: { subject: Subject; onScanClick: () => void; refreshKey: number }) {
+  const [sessions, setSessions] = useState<Session[]>([]);
   const [selectedSessionId, setSelectedSessionId] = useState<number | null>(null);
-  
-  // NUEVOS ESTADOS DE CARGA Y VISTA PREVIA
-  const [studentFile, setStudentFile] = useState<File | null>(null);
-  const [previewStudents, setPreviewStudents] = useState<any[]>([]);
-  const [isUploadingList, setIsUploadingList] = useState(false);
-  const [uploadMessage, setUploadMessage] = useState<{ text: string; type: 'success' | 'error' | '' }>({ text: '', type: '' });
+  const [attendanceStudents, setAttendanceStudents] = useState<AttendanceStudent[]>([]);
+  const { modal, confirm, cancel } = useConfirmModal();
 
-  const [manualStudent, setManualStudent] = useState({ matricula: '', email: '', name: '' });
-  const [isSubmittingManual, setIsSubmittingManual] = useState(false);
-  const [manualMessage, setManualMessage] = useState<{ text: string; type: 'success' | 'error' | '' }>({ text: '', type: '' });
+  const todayKey = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Mexico_City' });
+  const historySessions = sessions.filter((s) => {
+    const key = new Date(s.created_at).toLocaleDateString('en-CA', { timeZone: 'America/Mexico_City' });
+    return key !== todayKey;
+  });
 
-  const [records, setRecords] = useState<any[]>([]);
-  const [allStudents, setAllStudents] = useState<any[]>([]);
+  const fetchSessions = useCallback(async () => {
+    try {
+      const res = await fetch(`/api/professor/subject/${subject.id}/attendance`, {
+        headers: { Authorization: `Bearer ${localStorage.getItem('token')}` },
+      });
+      const data = await res.json();
+      setSessions(data.sessions || []);
+    } catch (err) {
+      console.error('[AttendanceTab] fetchSessions:', err);
+    }
+  }, [subject.id]);
 
-  const fetchAttendanceList = async (sessionId?: number | null) => {
+  const fetchAttendanceList = useCallback(async (sessionId: number | null) => {
     try {
       const url = sessionId
         ? `/api/professor/subject/${subject.id}/attendance-list?session_id=${sessionId}`
         : `/api/professor/subject/${subject.id}/attendance-list`;
-
-      const response = await fetch(url);
-      const result = await response.json();
-
-      if (result.success) {
-        setAttendanceStudents(result.students);
-      }
-    } catch (error) {
-      console.error("Error al cargar lista de asistencia:", error);
+      const res = await fetch(url, {
+        headers: { Authorization: `Bearer ${localStorage.getItem('token')}` },
+      });
+      const result = await res.json();
+      if (result.success) setAttendanceStudents(result.students);
+    } catch (err) {
+      console.error('[AttendanceTab] fetchAttendanceList:', err);
     }
-  };
-
-  useEffect(() => {
-    if (selectedSessionId) {
-      fetchAttendanceList(selectedSessionId);
-    } else {
-      fetchAttendanceList();
-    }
-  }, [subject.id, refreshKey, selectedSessionId]);
-
-  const closeAttendance = async () => {
-    const confirmClose = confirm("¿Seguro que quieres cerrar la asistencia? Solo los alumnos activos que no pasaron lista cambiarán a No asistió.");
-    if (!confirmClose) return;
-
-    const response = await fetch("/api/attendance/close", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ materia_id: subject.id }),
-    });
-
-    const result = await response.json();
-
-    if (result.success) {
-      alert("Asistencia cerrada correctamente.");
-      fetchAttendanceList(selectedSessionId);
-    } else {
-      alert(result.message || "Error al cerrar asistencia.");
-    }
-  };
-
-  useEffect(() => {
-    fetchSessions();
   }, [subject.id]);
 
+  // Single source of truth for attendance list
   useEffect(() => {
-    if (selectedSessionId) fetchRecords(selectedSessionId);
-  }, [selectedSessionId]);
+    fetchAttendanceList(selectedSessionId);
+  }, [fetchAttendanceList, selectedSessionId, refreshKey]);
 
-  const fetchSessions = async () => {
-    const res = await fetch(`/api/professor/subject/${subject.id}/attendance`);
-    const data = await res.json();
-    setSessions(data.sessions || []);
-    setSelectedSessionId(null);
-    fetchAttendanceList();
-  };
+  useEffect(() => { fetchSessions(); }, [fetchSessions]);
 
-  const fetchRecords = async (sessionId: number) => {
-    const res = await fetch(`/api/professor/session/${sessionId}/records`);
-    const data = await res.json();
-    setRecords(data.records);
-    setAllStudents(data.allStudents);
-  };
+  const closeAttendance = async () => {
+    const ok = await confirm(
+      'Cerrar asistencia',
+      'Los alumnos activos que no pasaron lista quedarán marcados como "No asistió". Esta acción no se puede deshacer.',
+    );
+    if (!ok) return;
 
-  const generateToken = async () => {
-    const res = await fetch('/api/professor/attendance/token', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ subjectId: subject.id }),
-    });
-    const data = await res.json();
-    if (data.success) {
-      setToken(data.token);
-      setExpiresAt(data.expiresAt);
-      fetchSessions();
-      setSelectedSessionId(data.sessionId);
+    try {
+      const response = await fetch('/api/attendance/close', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${localStorage.getItem('token')}`,
+        },
+        body: JSON.stringify({ materia_id: subject.id }),
+      });
+      const result = await response.json();
+      if (result.success) fetchAttendanceList(selectedSessionId);
+    } catch (err) {
+      console.error('[AttendanceTab] closeAttendance:', err);
     }
   };
 
+  const estadoLabel: Record<string, string> = {
+    presente: 'Presente',
+    no_asistio: 'No asistió',
+    pendiente_activar: 'Pendiente de activar',
+    pendiente: 'Pendiente',
+  };
+  const estadoClass: Record<string, string> = {
+    presente: 'bg-green-50 text-green-700 border border-green-200',
+    no_asistio: 'bg-red-50 text-red-700 border border-red-200',
+    pendiente_activar: 'bg-slate-50 text-slate-700 border border-slate-200',
+    pendiente: 'bg-yellow-50 text-yellow-700 border border-yellow-200',
+  };
+
+  return (
+    <>
+      <ConfirmModal modal={modal} onCancel={cancel} />
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <div className="bg-white p-6 rounded-2xl shadow-sm border border-blue-100">
+          <h3 className="font-bold text-slate-800 mb-4 flex items-center gap-2">
+            <Clock className="w-5 h-5 text-blue-600" /> Asistencia en Vivo
+          </h3>
+          <button
+            onClick={onScanClick}
+            className="w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold py-3 rounded-xl flex items-center justify-center gap-2 shadow-md"
+          >
+            <QrCode className="w-5 h-5" /> Escanear QR
+          </button>
+        </div>
+
+        <div className="lg:col-span-2 bg-white rounded-2xl shadow-sm border border-blue-100 overflow-hidden flex flex-col">
+          <div className="p-6 border-b border-blue-50 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+            <h3 className="font-bold text-slate-800 flex items-center gap-2">
+              <CheckSquare className="w-5 h-5 text-blue-600" /> Lista de Asistencia
+              <button
+                onClick={closeAttendance}
+                className="bg-red-600 hover:bg-red-700 text-white text-sm font-semibold px-4 py-2 rounded-xl ml-2 transition-colors"
+              >
+                Cerrar asistencia
+              </button>
+            </h3>
+            <select
+              className="bg-slate-50 border border-slate-200 rounded-lg px-4 py-2 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100 transition-all w-full sm:w-auto"
+              value={selectedSessionId ?? ''}
+              onChange={(e) => setSelectedSessionId(e.target.value ? Number(e.target.value) : null)}
+            >
+              <option value="">Asistencia de hoy</option>
+              {historySessions.map((s) => {
+                const fecha = new Date(s.created_at);
+                return (
+                  <option key={s.id} value={s.id}>
+                    {fecha.toLocaleDateString('es-MX', { timeZone: 'America/Mexico_City' })} -{' '}
+                    {fecha.toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit', timeZone: 'America/Mexico_City' })}
+                  </option>
+                );
+              })}
+            </select>
+          </div>
+
+          <div className="overflow-x-auto">
+            <table className="w-full text-left">
+              <thead className="bg-slate-50 text-slate-500 text-xs uppercase tracking-wider">
+                <tr>
+                  <th className="px-6 py-4 font-semibold">Matrícula</th>
+                  <th className="px-6 py-4 font-semibold">Nombre</th>
+                  <th className="px-6 py-4 font-semibold text-center">Estado</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {attendanceStudents.length === 0 ? (
+                  <tr>
+                    <td colSpan={3} className="px-6 py-12 text-center text-slate-400">
+                      No hay alumnos inscritos aún en esta materia.
+                    </td>
+                  </tr>
+                ) : (
+                  attendanceStudents.map((student) => (
+                    <tr key={student.id} className="hover:bg-slate-50 transition-colors">
+                      <td className="px-6 py-4 text-sm font-mono text-slate-600">{student.matricula || 'N/A'}</td>
+                      <td className="px-6 py-4 text-sm font-medium text-slate-900">{student.nombre}</td>
+                      <td className="px-6 py-4 text-center">
+                        <span className={`inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold ${estadoClass[student.estado] ?? ''}`}>
+                          {estadoLabel[student.estado] ?? student.estado}
+                        </span>
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </>
+  );
+}
+
+// ─── StudentsTab ──────────────────────────────────────────────────────────────
+
+function StudentsTab({ subject }: { subject: Subject }) {
+  const [manualStudent, setManualStudent] = useState({ matricula: '', email: '', name: '' });
+  const [isSubmittingManual, setIsSubmittingManual] = useState(false);
+  const [manualMessage, setManualMessage] = useState<FeedbackMsg>({ text: '', type: '' });
+
+  const [htmlPaste, setHtmlPaste] = useState('');
+  const [previewStudents, setPreviewStudents] = useState<any[]>([]);
+  const [isUploadingList, setIsUploadingList] = useState(false);
+  const [uploadMessage, setUploadMessage] = useState<FeedbackMsg>({ text: '', type: '' });
+
+  const authedHeaders = () => ({
+    'Content-Type': 'application/json',
+    Authorization: `Bearer ${localStorage.getItem('token')}`,
+  });
+
+  // ── Validations ──
+
+  const isValidEmail = (email: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+  const isValidMatricula = (m: string) => m.trim().length >= 3;
+
   const handleManualAdd = async () => {
-    if (!manualStudent.matricula || !manualStudent.email || !manualStudent.name) {
-      setManualMessage({ text: 'Por favor completa todos los campos', type: 'error' });
+    const { matricula, email, name } = manualStudent;
+
+    if (!matricula.trim() || !email.trim() || !name.trim()) {
+      setManualMessage({ text: 'Por favor completa todos los campos.', type: 'error' });
+      return;
+    }
+    if (!isValidMatricula(matricula)) {
+      setManualMessage({ text: 'La matrícula debe tener al menos 3 caracteres.', type: 'error' });
+      return;
+    }
+    if (!isValidEmail(email)) {
+      setManualMessage({ text: 'El correo electrónico no es válido.', type: 'error' });
       return;
     }
 
@@ -362,449 +624,671 @@ function SubjectDetail({
     try {
       const res = await fetch('/api/professor/students/bulk', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ subjectId: subject.id, students: [manualStudent] }),
+        headers: authedHeaders(),
+        body: JSON.stringify({ subjectId: subject.id, students: [{ matricula: matricula.trim(), email: email.trim().toLowerCase(), name: name.trim() }] }),
       });
-
       const data = await res.json();
       if (data.success) {
-        setManualMessage({ text: 'Alumno agregado exitosamente', type: 'success' });
+        const extra =
+          typeof data.mailed === 'number'
+            ? ` Correo: ${data.mailed ? 'enviado' : 'no enviado'}${data.mailFailed ? ' (error Brevo)' : ''}.`
+            : '';
+        setManualMessage({ text: 'Alumno agregado exitosamente.' + extra, type: 'success' });
         setManualStudent({ matricula: '', email: '', name: '' });
-        fetchAttendanceList();
-        if (selectedSessionId) fetchRecords(selectedSessionId);
       } else {
-        setManualMessage({ text: 'Error al agregar alumno: ' + data.message, type: 'error' });
+        setManualMessage({ text: 'Error: ' + data.message, type: 'error' });
       }
-    } catch (err) {
-      setManualMessage({ text: 'Error de conexión con el servidor', type: 'error' });
+    } catch {
+      setManualMessage({ text: 'Error de conexión con el servidor.', type: 'error' });
     } finally {
       setIsSubmittingManual(false);
-      setTimeout(() => setManualMessage({ text: '', type: '' }), 3000);
+      setTimeout(() => setManualMessage({ text: '', type: '' }), 4000);
     }
   };
 
-  // FUNCION: Leer y previsualizar
-  const handleFilePreview = () => {
-    if (!studentFile) return;
-    setUploadMessage({ text: '', type: '' });
+  const normalize = (s: string) =>
+    s
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/\s+/g, ' ')
+      .trim();
 
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      try {
-        const data = e.target?.result;
-        const workbook = XLSX.read(data, { type: 'binary' });
-        const firstSheetName = workbook.SheetNames[0];
-        const worksheet = workbook.Sheets[firstSheetName];
-        const jsonData = XLSX.utils.sheet_to_json<string[]>(worksheet, { header: 1 });
-
-        const students = [];
-
-        for (let i = 1; i < jsonData.length; i++) {
-          const row = jsonData[i];
-          if (!row || row.length === 0) continue;
-
-          // Ajustes según estructura BUAP
-          const nombre = row[0] ? String(row[0]).trim() : '';      // Columna A: Nombre
-          const apellidos = row[1] ? String(row[1]).trim() : '';   // Columna B: Apellidos
-          const matricula = row[2] ? String(row[2]).trim() : '';   // Columna C: Número de ID
-          const correo = row[3] ? String(row[3]).trim() : '';      // Columna D: Correo
-
-          const fullName = `${nombre} ${apellidos}`.trim();
-
-          // Validamos que exista matrícula, correo y que NO sea la fila de encabezados
-          if (correo && matricula && matricula !== 'Número de ID') {
-            students.push({ matricula, email: correo, name: fullName });
-          }
-        }
-
-        if (students.length === 0) {
-          setUploadMessage({ text: `No se encontraron datos válidos. Revisa el Excel.`, type: 'error' });
-          return;
-        }
-
-        setPreviewStudents(students);
-      } catch (error) {
-        console.error(error);
-        setUploadMessage({ text: 'Ocurrió un error al procesar el archivo Excel.', type: 'error' });
-      }
-    };
-    reader.readAsBinaryString(studentFile);
+  const extractMailtoFromRow = (tr: Element): string => {
+    const links = tr.querySelectorAll('a[href^="mailto:"]');
+    for (const a of links) {
+      const href = (a as HTMLAnchorElement).getAttribute('href') ?? '';
+      const m = href.match(/^mailto:([^?&]+)/i);
+      if (!m?.[1]) continue;
+      const addr = decodeURIComponent(m[1].trim()).toLowerCase();
+      if (addr && !addr.startsWith('?') && isValidEmail(addr)) return addr;
+    }
+    return '';
   };
 
-  // FUNCION: Enviar a base de datos
+  /** Banner / autoservicios BUAP: varias tablas; la lista va en datadisplaytable con caption "Resumen de Lista de Clase". */
+  const findClassListTable = (doc: Document): HTMLTableElement | null => {
+    const tables = Array.from(doc.querySelectorAll('table'));
+    for (const t of tables) {
+      const cap = normalize(t.querySelector('caption')?.textContent ?? '');
+      if (cap.includes('resumen de lista de clase')) return t;
+      const sum = (t.getAttribute('summary') ?? '').toLowerCase();
+      if (sum.includes('lista de alumnos inscritos')) return t;
+    }
+    for (const t of tables) {
+      const firstRow = t.querySelector('tr');
+      if (!firstRow) continue;
+      const heads = Array.from(firstRow.querySelectorAll('th,td')).map((c) => normalize(c.textContent ?? ''));
+      const hasNombre = heads.some((h) => h.includes('nombre de alumno'));
+      const hasIdCol = heads.some((h) => h === 'id' || h.includes('numero de identificacion'));
+      if (hasNombre && hasIdCol && t.querySelector('a[href^="mailto:"]')) return t;
+    }
+    return null;
+  };
+
+  const extractStudentsFromHtml = (html: string) => {
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+    const table = findClassListTable(doc);
+    if (!table) return [];
+
+    const tableEl = table as HTMLTableElement;
+    const rows = Array.from(tableEl.rows);
+    if (rows.length < 2) return [];
+
+    const headerRow = rows.find((tr) => tr.querySelector('th.ddheader')) ?? rows[0];
+    const headerCells = Array.from(headerRow.querySelectorAll('th,td')).map((c) => normalize(c.textContent ?? ''));
+
+    const idxMatricula = headerCells.findIndex(
+      (h) => h === 'id' || h === 'numero de id' || h.includes('numero de identificacion') || /^matricula\b/.test(h),
+    );
+    const idxNombre = headerCells.findIndex((h) => h.includes('nombre de alumno') || /^nombre\b/.test(h));
+    const idxEmail = headerCells.findIndex((h) => /correo|e-?mail|email/.test(h));
+
+    const out: { matricula: string; email: string; name: string }[] = [];
+    for (const tr of rows) {
+      if (tr === headerRow) continue;
+      if (!tr.querySelector('td')) continue;
+
+      const cells = Array.from(tr.querySelectorAll('td,th')).map((c) => String(c.textContent ?? '').replace(/\s+/g, ' ').trim());
+      if (cells.length === 0) continue;
+
+      const matricula = idxMatricula >= 0 ? String(cells[idxMatricula] ?? '').trim() : '';
+      let email = idxEmail >= 0 ? String(cells[idxEmail] ?? '').trim().toLowerCase() : '';
+      if (!email || !isValidEmail(email)) email = extractMailtoFromRow(tr);
+
+      const nombre = idxNombre >= 0 ? String(cells[idxNombre] ?? '').trim() : '';
+      const name = nombre || matricula;
+
+      if (matricula && isValidEmail(email) && /^\d{6,}$/.test(matricula.replace(/\D/g, ''))) {
+        out.push({ matricula: matricula.replace(/\D/g, ''), email, name: name || matricula });
+      }
+    }
+    return out;
+  };
+
+  const handleHtmlPreview = () => {
+    setUploadMessage({ text: '', type: '' });
+    if (!htmlPaste.trim()) return;
+
+    try {
+      const students = extractStudentsFromHtml(htmlPaste);
+      if (students.length === 0) {
+        setUploadMessage({ text: 'No se detectó una tabla válida. Copia/Pega la tabla HTML de autoservicios.', type: 'error' });
+        return;
+      }
+      setPreviewStudents(students);
+    } catch {
+      setUploadMessage({ text: 'No se pudo procesar el HTML pegado.', type: 'error' });
+    }
+  };
+
   const confirmAndUpload = async () => {
     if (previewStudents.length === 0) return;
-    
     setIsUploadingList(true);
     setUploadMessage({ text: '', type: '' });
 
     try {
       const res = await fetch('/api/professor/students/bulk', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: authedHeaders(),
         body: JSON.stringify({ subjectId: subject.id, students: previewStudents }),
       });
-
       const data = await res.json();
-
       if (data.success) {
-        setUploadMessage({ text: `¡${previewStudents.length} estudiantes importados con éxito!`, type: 'success' });
-        setPreviewStudents([]); 
-        setStudentFile(null); 
-        fetchAttendanceList();
-        if (selectedSessionId) fetchRecords(selectedSessionId);
+        const extra =
+          typeof data.mailed === 'number'
+            ? ` Correos enviados: ${data.mailed}.${data.mailFailed ? ` Fallidos: ${data.mailFailed}.` : ''}${data.skippedActivo ? ` Ya activos (sin correo): ${data.skippedActivo}.` : ''}`
+            : '';
+        setUploadMessage({ text: `¡${previewStudents.length} estudiantes procesados!${extra}`, type: 'success' });
+        setPreviewStudents([]);
+        setHtmlPaste('');
       } else {
-        setUploadMessage({ text: 'Hubo un error al procesar la lista en el servidor.', type: 'error' });
+        setUploadMessage({ text: 'Error al procesar la lista en el servidor.', type: 'error' });
       }
-    } catch (error) {
+    } catch {
       setUploadMessage({ text: 'Error de conexión con el servidor.', type: 'error' });
     } finally {
       setIsUploadingList(false);
     }
   };
 
-  const todayKey = new Date().toLocaleDateString("en-CA", { timeZone: "America/Mexico_City" });
-  const historySessions = sessions.filter((session) => {
-    const sessionDateKey = new Date(session.created_at).toLocaleDateString("en-CA", { timeZone: "America/Mexico_City" });
-    return sessionDateKey !== todayKey;
-  });
+  const FeedbackBanner = ({ msg }: { msg: FeedbackMsg }) =>
+    msg.text ? (
+      <motion.div
+        initial={{ opacity: 0, scale: 0.95 }}
+        animate={{ opacity: 1, scale: 1 }}
+        className={`p-3 rounded-xl text-sm font-medium flex items-center gap-2 ${
+          msg.type === 'success' ? 'bg-green-50 text-green-700 border border-green-200' : 'bg-red-50 text-red-700 border border-red-200'
+        }`}
+      >
+        {msg.type === 'success' ? <CheckCircle className="w-5 h-5 shrink-0" /> : <AlertCircle className="w-5 h-5 shrink-0" />}
+        {msg.text}
+      </motion.div>
+    ) : null;
 
   return (
-    <div className="space-y-6">
-      <button
-        onClick={onBack}
-        className="flex items-center gap-2 text-slate-500 hover:text-blue-600 transition-colors font-medium mb-2"
-      >
-        <ArrowLeft className="w-4 h-4" />
-        Volver a mis materias
-      </button>
-
-      {/* Encabezado Principal de la Materia */}
-      <div className="bg-blue-900 text-white p-8 rounded-3xl shadow-lg relative overflow-hidden">
-        <div className="relative z-10">
-          <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-6">
-            <h2 className="text-3xl font-bold">{subject.name}</h2>
-            <span className="bg-blue-800 text-blue-100 text-sm font-bold px-4 py-2 rounded-full border border-blue-700 w-fit">
-              NRC: {subject.nrc}
-            </span>
-          </div>
-
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div className="bg-white/10 p-4 rounded-2xl border border-white/10 backdrop-blur-sm">
-              <h3 className="text-blue-200 text-xs uppercase tracking-wider font-semibold mb-3 flex items-center gap-2">
-                <Clock className="w-4 h-4" /> Horarios de Clase
-              </h3>
-              <div className="flex flex-wrap gap-2">
-                {(subject.schedule || '').split(' / ').filter(Boolean).map((time, i) => (
-                  <span key={i} className="bg-blue-800 text-blue-50 px-3 py-1.5 rounded-lg text-sm font-medium shadow-sm border border-blue-700/50">
-                    {time}
-                  </span>
-                ))}
-              </div>
-            </div>
-
-            <div className="bg-white/10 p-4 rounded-2xl border border-white/10 backdrop-blur-sm">
-              <h3 className="text-blue-200 text-xs uppercase tracking-wider font-semibold mb-3 flex items-center gap-2">
-                <MapPin className="w-4 h-4" /> Salones Asignados
-              </h3>
-              <div className="flex flex-wrap gap-2">
-                {(subject.classroom || '').split(' / ').filter(Boolean).map((room, i) => (
-                  <span key={i} className="bg-blue-800 text-blue-50 px-3 py-1.5 rounded-lg text-sm font-medium shadow-sm border border-blue-700/50">
-                    {room}
-                  </span>
-                ))}
-              </div>
-            </div>
-          </div>
+    <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+      {/* Manual */}
+      <div className="bg-white p-6 rounded-2xl shadow-sm border border-blue-100 h-fit">
+        <h3 className="font-bold text-slate-800 mb-4 flex items-center gap-2">
+          <Users className="w-5 h-5 text-blue-600" /> Agregar Alumno Manual
+        </h3>
+        <div className="space-y-4">
+          <input
+            type="text"
+            placeholder="Matrícula"
+            value={manualStudent.matricula}
+            onChange={(e) => setManualStudent({ ...manualStudent, matricula: e.target.value })}
+            className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500 transition-shadow text-sm"
+          />
+          <input
+            type="text"
+            placeholder="Nombre Completo"
+            value={manualStudent.name}
+            onChange={(e) => setManualStudent({ ...manualStudent, name: e.target.value })}
+            className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500 transition-shadow text-sm"
+          />
+          <input
+            type="email"
+            placeholder="Correo Electrónico"
+            value={manualStudent.email}
+            onChange={(e) => setManualStudent({ ...manualStudent, email: e.target.value })}
+            className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500 transition-shadow text-sm"
+          />
+          <button
+            onClick={handleManualAdd}
+            disabled={isSubmittingManual}
+            className="w-full bg-blue-600 hover:bg-blue-700 text-white py-3 rounded-xl font-medium transition-colors flex justify-center items-center gap-2 disabled:opacity-70 shadow-md"
+          >
+            {isSubmittingManual && <Loader2 className="w-5 h-5 animate-spin" />}
+            {isSubmittingManual ? 'Guardando...' : 'Agregar Alumno'}
+          </button>
+          <FeedbackBanner msg={manualMessage} />
         </div>
-        <div className="absolute right-0 top-0 w-64 h-64 bg-blue-500 rounded-full blur-3xl opacity-20 transform translate-x-1/3 -translate-y-1/3"></div>
       </div>
 
-      {/* TABS DE NAVEGACIÓN */}
-      <div className="flex flex-wrap gap-2 bg-white p-1.5 rounded-xl shadow-sm border border-blue-100 w-fit">
-        <button
-          onClick={() => setActiveTab('asistencia')}
-          className={`px-5 py-2.5 text-sm font-semibold rounded-lg transition-all ${
-            activeTab === 'asistencia' ? 'bg-blue-600 text-white shadow-md' : 'text-slate-600 hover:text-blue-700 hover:bg-blue-50'
-          }`}
-        >
-          Asistencia
-        </button>
-        <button
-          onClick={() => setActiveTab('alumnos')}
-          className={`px-5 py-2.5 text-sm font-semibold rounded-lg transition-all ${
-            activeTab === 'alumnos' ? 'bg-blue-600 text-white shadow-md' : 'text-slate-600 hover:text-blue-700 hover:bg-blue-50'
-          }`}
-        >
-          Gestión de Alumnos
-        </button>
-        <button
-          onClick={() => setActiveTab('evaluacion')}
-          className={`px-5 py-2.5 text-sm font-semibold rounded-lg transition-all ${
-            activeTab === 'evaluacion' ? 'bg-blue-600 text-white shadow-md' : 'text-slate-600 hover:text-blue-700 hover:bg-blue-50'
-          }`}
-        >
-          Evaluación y Ponderaciones
-        </button>
-      </div>
+      {/* Bulk */}
+      <div className="bg-white p-6 rounded-2xl shadow-sm border border-blue-100 h-fit">
+        <h3 className="font-bold text-slate-800 mb-4 flex items-center gap-2">
+          <Upload className="w-5 h-5 text-blue-600" /> Importar desde HTML (autoservicios)
+        </h3>
 
-      {/* ---------------- PESTAÑA 1: ASISTENCIA ---------------- */}
-      {activeTab === 'asistencia' && (
-        <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          <div className="space-y-6">
-            <div className="bg-white p-6 rounded-2xl shadow-sm border border-blue-100">
-              <h3 className="font-bold text-slate-800 mb-4 flex items-center gap-2">
-                <Clock className="w-5 h-5 text-blue-600" />
-                Asistencia en Vivo
-              </h3>
-              {SHOW_TOKEN_FLOW && token && (
-                <div className="text-center py-6 bg-blue-50 rounded-xl border border-blue-200">
-                  <p className="text-sm text-blue-600 mb-2">Comparte este código con los alumnos</p>
-                  <div className="text-4xl font-mono font-bold text-blue-900 tracking-widest mb-2">{token}</div>
-                  <p className="text-xs text-slate-500">Expira a las {new Date(expiresAt!).toLocaleTimeString()}</p>
-                </div>
-              )}
-              {SHOW_TOKEN_FLOW && !token && (
-                <button onClick={generateToken} className="w-full bg-blue-600 hover:bg-blue-700 text-white py-3 rounded-xl font-medium shadow-lg">
-                  PIN de Asistencia
-                </button>
-              )}
-              <button onClick={onScanClick} className="w-full mt-3 bg-blue-600 hover:bg-blue-700 text-white font-semibold py-3 rounded-xl flex items-center justify-center gap-2 shadow-md">
-                <QrCode className="w-5 h-5" />
-                Escanear QR
-              </button>
-            </div>
-          </div>
-
-          <div className="lg:col-span-2 bg-white rounded-2xl shadow-sm border border-blue-100 overflow-hidden flex flex-col h-full">
-            <div className="p-6 border-b border-blue-50 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
-              <h3 className="font-bold text-slate-800 flex items-center gap-2">
-                <CheckSquare className="w-5 h-5 text-blue-600" />
-                Lista de Asistencia
-                <button onClick={closeAttendance} className="bg-red-600 hover:bg-red-700 text-white text-sm font-semibold px-4 py-2 rounded-xl ml-2">
-                  Cerrar asistencia
-                </button>
-              </h3>
-              <select
-                className="bg-slate-50 border border-slate-200 rounded-lg px-4 py-2 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100 transition-all w-full sm:w-auto"
-                value={selectedSessionId || ""}
-                onChange={(e) => {
-                  const value = e.target.value ? Number(e.target.value) : null;
-                  setSelectedSessionId(value);
-                  fetchAttendanceList(value);
-                }}
-              >
-                <option value="">Asistencia de hoy</option>
-                {historySessions.map((s) => {
-                  const fecha = new Date(s.created_at);
-                  return (
-                    <option key={s.id} value={s.id}>
-                      Asistencia del {fecha.toLocaleDateString("es-MX", { timeZone: "America/Mexico_City" })} -{" "}
-                      {fecha.toLocaleTimeString("es-MX", { hour: "2-digit", minute: "2-digit", timeZone: "America/Mexico_City" })}
-                    </option>
-                  );
-                })}
-              </select>
-            </div>
-
-            <div className="overflow-x-auto">
-              <table className="w-full text-left">
-                <thead className="bg-slate-50 text-slate-500 text-xs uppercase tracking-wider">
+        {previewStudents.length > 0 ? (
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-4">
+            <span className="text-sm font-bold text-blue-600 bg-blue-50 px-3 py-1 rounded-lg">
+              {previewStudents.length} alumnos detectados
+            </span>
+            <div className="max-h-60 overflow-y-auto border border-slate-200 rounded-xl">
+              <table className="w-full text-left text-sm">
+                <thead className="bg-slate-50 text-slate-500 sticky top-0 shadow-sm">
                   <tr>
-                    <th className="px-6 py-4 font-semibold">Matrícula</th>
-                    <th className="px-6 py-4 font-semibold">Nombre</th>
-                    <th className="px-6 py-4 font-semibold text-center">Estado</th>
+                    <th className="px-4 py-3 font-semibold">Matrícula</th>
+                    <th className="px-4 py-3 font-semibold">Nombre</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
-                  {attendanceStudents.map((student) => (
-                    <tr key={student.id} className="hover:bg-slate-50 transition-colors">
-                      <td className="px-6 py-4 text-sm font-mono text-slate-600">{student.matricula || "N/A"}</td>
-                      <td className="px-6 py-4 text-sm font-medium text-slate-900">{student.nombre}</td>
-                      <td className="px-6 py-4 text-center">
-                        <span
-                          className={`inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold ${
-                            student.estado === "presente" ? "bg-green-50 text-green-700 border border-green-200"
-                            : student.estado === "no_asistio" ? "bg-red-50 text-red-700 border border-red-200"
-                            : student.estado === "pendiente_activar" ? "bg-slate-50 text-slate-700 border border-slate-200"
-                            : "bg-yellow-50 text-yellow-700 border border-yellow-200"
-                          }`}
-                        >
-                          {student.estado === "presente" ? "Presente"
-                            : student.estado === "no_asistio" ? "No asistió"
-                            : student.estado === "pendiente_activar" ? "Pendiente de activar"
-                            : "Pendiente"}
-                        </span>
-                      </td>
+                  {previewStudents.map((s, i) => (
+                    <tr key={i} className="hover:bg-slate-50">
+                      <td className="px-4 py-2 font-mono text-xs text-slate-600">{s.matricula}</td>
+                      <td className="px-4 py-2 font-medium text-slate-800">{s.name}</td>
                     </tr>
                   ))}
-                  {attendanceStudents.length === 0 && (
-                    <tr>
-                      <td colSpan={3} className="px-6 py-12 text-center text-slate-400">
-                        No hay alumnos inscritos aún en esta materia.
-                      </td>
-                    </tr>
-                  )}
                 </tbody>
               </table>
             </div>
-          </div>
-        </motion.div>
-      )}
-
-      {/* ---------------- PESTAÑA 2: GESTIÓN DE ALUMNOS ---------------- */}
-      {activeTab === 'alumnos' && (
-        <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          <div className="bg-white p-6 rounded-2xl shadow-sm border border-blue-100 h-fit">
-            <h3 className="font-bold text-slate-800 mb-4 flex items-center gap-2">
-              <Users className="w-5 h-5 text-blue-600" />
-              Agregar Alumno Manual
-            </h3>
-            <div className="space-y-4">
-              <input type="text" placeholder="Matrícula" value={manualStudent.matricula} onChange={(e) => setManualStudent({ ...manualStudent, matricula: e.target.value })} className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500 transition-shadow text-sm" />
-              <input type="text" placeholder="Nombre Completo" value={manualStudent.name} onChange={(e) => setManualStudent({ ...manualStudent, name: e.target.value })} className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500 transition-shadow text-sm" />
-              <input type="email" placeholder="Correo Electrónico" value={manualStudent.email} onChange={(e) => setManualStudent({ ...manualStudent, email: e.target.value })} className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500 transition-shadow text-sm" />
-              <button onClick={handleManualAdd} disabled={isSubmittingManual} className="w-full bg-blue-600 hover:bg-blue-700 text-white py-3 rounded-xl font-medium transition-colors flex justify-center items-center gap-2 disabled:opacity-70 shadow-md">
-                {isSubmittingManual ? <Loader2 className="w-5 h-5 animate-spin" /> : null}
-                {isSubmittingManual ? 'Guardando...' : 'Agregar Alumno'}
+            <div className="flex gap-3 pt-2">
+              <button
+                onClick={() => { setPreviewStudents([]); setHtmlPaste(''); }}
+                disabled={isUploadingList}
+                className="w-1/3 bg-slate-100 hover:bg-slate-200 text-slate-700 py-2.5 rounded-xl font-medium transition-colors text-sm"
+              >
+                Cancelar
               </button>
-              {manualMessage.text && (
-                <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} className={`p-3 rounded-xl text-sm font-medium flex items-center gap-2 ${manualMessage.type === 'success' ? 'bg-green-50 text-green-700 border border-green-200' : 'bg-red-50 text-red-700 border border-red-200'}`}>
-                  {manualMessage.type === 'success' ? <CheckCircle className="w-5 h-5 shrink-0" /> : <AlertCircle className="w-5 h-5 shrink-0" />}
-                  {manualMessage.text}
-                </motion.div>
-              )}
+              <button
+                onClick={confirmAndUpload}
+                disabled={isUploadingList}
+                className="w-2/3 bg-green-600 hover:bg-green-700 text-white py-2.5 rounded-xl font-medium transition-colors flex items-center justify-center gap-2 text-sm shadow-md"
+              >
+                {isUploadingList ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle className="w-4 h-4" />}
+                {isUploadingList ? 'Guardando...' : 'Confirmar y Subir'}
+              </button>
             </div>
+          </motion.div>
+        ) : (
+          <div className="space-y-4">
+            <p className="text-sm text-slate-500 mb-4">
+              Copia y pega la página completa o al menos la tabla «Resumen de Lista de Clase» de autoservicios (Banner). El correo se lee de los enlaces mailto:.
+            </p>
+            <textarea
+              value={htmlPaste}
+              onChange={(e) => { setHtmlPaste(e.target.value); setUploadMessage({ text: '', type: '' }); }}
+              placeholder="<table>...</table>"
+              rows={7}
+              className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500 transition-shadow text-sm font-mono"
+            />
+            <button
+              onClick={handleHtmlPreview}
+              disabled={!htmlPaste.trim()}
+              className="w-full bg-slate-800 hover:bg-slate-900 text-white py-3 rounded-xl font-medium disabled:opacity-50 transition-all flex items-center justify-center gap-2 shadow-md"
+            >
+              Previsualizar Lista
+            </button>
+          </div>
+        )}
+
+        {uploadMessage.text && previewStudents.length === 0 && (
+          <motion.div
+            initial={{ opacity: 0, y: -10 }}
+            animate={{ opacity: 1, y: 0 }}
+            className={`mt-4 p-3 rounded-xl flex items-start gap-2 text-sm border ${
+              uploadMessage.type === 'success' ? 'bg-green-50 text-green-700 border-green-200' : 'bg-red-50 text-red-700 border-red-200'
+            }`}
+          >
+            {uploadMessage.type === 'success' ? <CheckCircle className="w-5 h-5 shrink-0" /> : <AlertCircle className="w-5 h-5 shrink-0" />}
+            <p className="font-medium mt-0.5">{uploadMessage.text}</p>
+          </motion.div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─── EvaluationTab ────────────────────────────────────────────────────────────
+
+function EvaluationTab({ subject }: { subject: Subject }) {
+  const [ponderaciones, setPonderaciones] = useState<Ponderacion[]>([]);
+  const [isAddingPond, setIsAddingPond] = useState(false);
+  const [newPond, setNewPond] = useState({ nombre: '', porcentaje: '' });
+  const [pondLoading, setPondLoading] = useState(false);
+  const [pondError, setPondError] = useState('');
+
+  const totalPct = ponderaciones.reduce((a, c) => a + c.porcentaje, 0);
+
+  const [activeEvalTab, setActiveEvalTab] = useState<'import' | 'concentrado'>('import');
+  const [gradesFile, setGradesFile] = useState<File | null>(null);
+  const [gradesPreview, setGradesPreview] = useState<Array<{ matricula: string; calificaciones: Record<string, number> }>>([]);
+  const [gradesMessage, setGradesMessage] = useState<FeedbackMsg>({ text: '', type: '' });
+  const [gradesLoading, setGradesLoading] = useState(false);
+  const [concentrado, setConcentrado] = useState<any[]>([]);
+  const [concentradoLoading, setConcentradoLoading] = useState(false);
+
+  const authedHeaders = () => ({
+    'Content-Type': 'application/json',
+    Authorization: `Bearer ${localStorage.getItem('token')}`,
+  });
+
+  const fetchPonderaciones = useCallback(async () => {
+    try {
+      const res = await fetch(`/api/professor/subject/${subject.id}/ponderaciones`, {
+        headers: { Authorization: `Bearer ${localStorage.getItem('token')}` },
+      });
+      const data = await res.json();
+      if (data.success) setPonderaciones(data.ponderaciones);
+    } catch (err) {
+      console.error('[EvaluationTab] fetchPonderaciones:', err);
+    }
+  }, [subject.id]);
+
+  useEffect(() => { fetchPonderaciones(); }, [fetchPonderaciones]);
+
+  const normalize = (s: string) =>
+    s
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+
+  const handleGradesPreview = async () => {
+    if (!gradesFile) return;
+    setGradesMessage({ text: '', type: '' });
+
+    try {
+      const buf = await gradesFile.arrayBuffer();
+      const workbook = XLSX.read(buf, { type: 'array' });
+      const worksheet = workbook.Sheets[workbook.SheetNames[0]];
+      const jsonData = XLSX.utils.sheet_to_json<any[]>(worksheet, { header: 1 });
+      if (!Array.isArray(jsonData) || jsonData.length < 2) {
+        setGradesMessage({ text: 'El archivo no tiene filas suficientes.', type: 'error' });
+        return;
+      }
+
+      const header = (jsonData[0] ?? []).map((h: any) => String(h ?? '').trim());
+      const headerNorm = header.map((h: string) => normalize(h));
+      const idxMat = headerNorm.findIndex((h: string) => /matricula|numero de id|id/.test(h));
+      if (idxMat < 0) {
+        setGradesMessage({ text: 'No se encontró columna de matrícula/ID en el archivo.', type: 'error' });
+        return;
+      }
+
+      const pondNameSet = new Set(ponderaciones.map((p) => normalize(p.nombre)));
+      const pondCols = header
+        .map((h: string, i: number) => ({ h, i, hn: normalize(h) }))
+        .filter((c) => c.i !== idxMat && pondNameSet.has(c.hn));
+
+      if (pondCols.length === 0) {
+        setGradesMessage({ text: 'No detecté columnas que coincidan con tus ponderaciones (por nombre).', type: 'error' });
+        return;
+      }
+
+      const preview: Array<{ matricula: string; calificaciones: Record<string, number> }> = [];
+      for (let r = 1; r < jsonData.length; r++) {
+        const row = jsonData[r];
+        if (!row) continue;
+        const matricula = String(row[idxMat] ?? '').trim();
+        if (!matricula) continue;
+
+        const calificaciones: Record<string, number> = {};
+        pondCols.forEach((c) => {
+          const val = row[c.i];
+          const num = Number(val);
+          if (!Number.isNaN(num)) calificaciones[c.h] = num;
+        });
+        preview.push({ matricula, calificaciones });
+      }
+
+      if (preview.length === 0) {
+        setGradesMessage({ text: 'No se detectaron filas válidas de alumnos.', type: 'error' });
+        return;
+      }
+
+      setGradesPreview(preview.slice(0, 200)); // preview limitado
+      setGradesMessage({ text: `Detectadas ${preview.length} filas (mostrando hasta 200).`, type: 'success' });
+    } catch {
+      setGradesMessage({ text: 'No se pudo leer el archivo. Usa .xlsx o .csv exportado como Excel.', type: 'error' });
+    }
+  };
+
+  const handleImportGrades = async () => {
+    if (gradesPreview.length === 0) return;
+    setGradesLoading(true);
+    setGradesMessage({ text: '', type: '' });
+    try {
+      const res = await fetch(`/api/professor/subject/${subject.id}/calificaciones/import`, {
+        method: 'POST',
+        headers: authedHeaders(),
+        body: JSON.stringify({ rows: gradesPreview }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        setGradesMessage({ text: data?.message || 'No se pudo importar calificaciones.', type: 'error' });
+        return;
+      }
+      setGradesMessage({ text: `Importación OK. Registros: ${data.imported}.`, type: 'success' });
+      setGradesFile(null);
+      setGradesPreview([]);
+    } catch {
+      setGradesMessage({ text: 'Error de conexión al importar calificaciones.', type: 'error' });
+    } finally {
+      setGradesLoading(false);
+    }
+  };
+
+  const fetchConcentrado = useCallback(async () => {
+    setConcentradoLoading(true);
+    try {
+      const res = await fetch(`/api/professor/subject/${subject.id}/concentrado`, {
+        headers: { Authorization: `Bearer ${localStorage.getItem('token')}` },
+      });
+      const data = await res.json();
+      if (data.success) setConcentrado(data.students || []);
+    } catch (e) {
+      console.error('[EvaluationTab] concentrado:', e);
+    } finally {
+      setConcentradoLoading(false);
+    }
+  }, [subject.id]);
+
+  useEffect(() => {
+    if (activeEvalTab === 'concentrado') fetchConcentrado();
+  }, [activeEvalTab, fetchConcentrado]);
+
+  const handleSavePonderacion = async () => {
+    const pct = Number(newPond.porcentaje);
+
+    if (!newPond.nombre.trim()) { setPondError('El nombre es requerido.'); return; }
+    if (!pct || pct <= 0 || pct > 100) { setPondError('El porcentaje debe ser entre 1 y 100.'); return; }
+    if (totalPct + pct > 100) { setPondError(`No puedes superar 100%. Disponible: ${100 - totalPct}%.`); return; }
+
+    setPondError('');
+    setPondLoading(true);
+
+    try {
+      const res = await fetch(`/api/professor/subject/${subject.id}/ponderaciones`, {
+        method: 'POST',
+        headers: authedHeaders(),
+        body: JSON.stringify({ nombre: newPond.nombre.trim(), porcentaje: pct }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        setPondError(data?.message || 'No se pudo guardar la ponderación.');
+        return;
+      }
+
+      setPonderaciones((prev) => [...prev, data.ponderacion]);
+      setIsAddingPond(false);
+      setNewPond({ nombre: '', porcentaje: '' });
+    } catch (err) {
+      console.error('[EvaluationTab] handleSavePonderacion:', err);
+      setPondError('Error de conexión al guardar la ponderación.');
+    } finally {
+      setPondLoading(false);
+    }
+  };
+
+  return (
+    <>
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        {/* Ponderaciones panel */}
+        <div className="bg-white p-6 rounded-2xl shadow-sm border border-blue-100 h-fit">
+          <h3 className="font-bold text-slate-800 mb-1 flex items-center gap-2">
+            <Percent className="w-5 h-5 text-blue-600" /> Ponderaciones
+          </h3>
+          <p className="text-sm text-slate-500 mb-6">Define los porcentajes de evaluación para esta materia.</p>
+
+          <div className="space-y-3 mb-6">
+            {ponderaciones.length === 0 ? (
+              <p className="text-center text-sm text-slate-400 py-4 border border-dashed border-slate-200 rounded-xl">
+                No hay ponderaciones creadas.
+              </p>
+            ) : (
+              ponderaciones.map((pond) => (
+                <div key={pond.id} className="flex justify-between items-center bg-slate-50 p-4 rounded-xl border border-slate-100 hover:border-blue-200 transition-colors group">
+                  <span className="text-sm font-semibold text-slate-700">{pond.nombre}</span>
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-bold text-blue-600 bg-blue-100 px-3 py-1 rounded-lg">{pond.porcentaje}%</span>
+                  </div>
+                </div>
+              ))
+            )}
           </div>
 
-          <div className="bg-white p-6 rounded-2xl shadow-sm border border-blue-100 h-fit">
-            <h3 className="font-bold text-slate-800 mb-4 flex items-center gap-2">
-              <Upload className="w-5 h-5 text-blue-600" />
-              Importar Alumnos desde CSV/Excel
-            </h3>
-            
-            {previewStudents.length > 0 ? (
-              <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-4">
-                <div className="flex justify-between items-center mb-2">
-                  <span className="text-sm font-bold text-blue-600 bg-blue-50 px-3 py-1 rounded-lg">
-                    {previewStudents.length} alumnos detectados
-                  </span>
-                </div>
-                
-                <div className="max-h-60 overflow-y-auto border border-slate-200 rounded-xl scrollbar-thin scrollbar-thumb-slate-300">
-                  <table className="w-full text-left text-sm">
-                    <thead className="bg-slate-50 text-slate-500 sticky top-0 shadow-sm">
-                      <tr>
-                        <th className="px-4 py-3 font-semibold">Matrícula</th>
-                        <th className="px-4 py-3 font-semibold">Nombre</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-100">
-                      {previewStudents.map((s, i) => (
-                        <tr key={i} className="hover:bg-slate-50">
-                          <td className="px-4 py-2 font-mono text-xs text-slate-600">{s.matricula}</td>
-                          <td className="px-4 py-2 font-medium text-slate-800">{s.name}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
+          <div className="pt-4 border-t border-slate-100 flex justify-between items-center mb-6">
+            <span className="text-base font-bold text-slate-600">Total Evaluado:</span>
+            <span className={`text-lg font-black ${totalPct > 100 ? 'text-red-500' : totalPct === 100 ? 'text-green-600' : 'text-slate-700'}`}>
+              {totalPct}%
+            </span>
+          </div>
 
-                <div className="flex gap-3 pt-2">
-                  <button onClick={() => { setPreviewStudents([]); setStudentFile(null); }} className="w-1/3 bg-slate-100 hover:bg-slate-200 text-slate-700 py-2.5 rounded-xl font-medium transition-colors text-sm" disabled={isUploadingList}>
-                    Cancelar
-                  </button>
-                  <button onClick={confirmAndUpload} disabled={isUploadingList} className="w-2/3 bg-green-600 hover:bg-green-700 text-white py-2.5 rounded-xl font-medium transition-colors flex items-center justify-center gap-2 text-sm shadow-md">
-                    {isUploadingList ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle className="w-4 h-4" />}
-                    {isUploadingList ? 'Guardando...' : 'Confirmar y Subir'}
-                  </button>
-                </div>
-              </motion.div>
-            ) : (
-              <div className="space-y-4">
-                <p className="text-sm text-slate-500 mb-6">
-                  Sube el archivo de Excel descargado de autoservicios para cargar la lista.
-                </p>
-                <div className="border-2 border-dashed border-blue-200 rounded-2xl p-8 text-center bg-blue-50/50 hover:bg-blue-50 transition-colors">
-                  <input
-                    type="file"
-                    accept=".csv, .xlsx"
-                    onChange={(e) => {
-                      setStudentFile(e.target.files?.[0] || null);
-                      setUploadMessage({ text: '', type: '' });
-                    }}
-                    className="block w-full text-sm text-slate-500 file:mr-4 file:py-2.5 file:px-6 file:rounded-xl file:border-0 file:text-sm file:font-bold file:bg-blue-100 file:text-blue-700 hover:file:bg-blue-200 transition-colors cursor-pointer mx-auto"
-                  />
-                </div>
-                <button onClick={handleFilePreview} disabled={!studentFile} className="w-full bg-slate-800 hover:bg-slate-900 text-white py-3 rounded-xl font-medium disabled:opacity-50 transition-all flex items-center justify-center gap-2 shadow-md">
-                  Previsualizar Lista
+          {isAddingPond ? (
+            <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} className="space-y-3 p-4 bg-blue-50/50 rounded-xl border border-blue-100">
+              <input
+                type="text"
+                placeholder="Ej. Proyecto Final"
+                value={newPond.nombre}
+                onChange={(e) => setNewPond({ ...newPond, nombre: e.target.value })}
+                className="w-full text-sm px-3 py-2 rounded-lg border border-blue-200 focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+              <div className="flex gap-2">
+                <input
+                  type="number"
+                  placeholder="%"
+                  min={1}
+                  max={100}
+                  value={newPond.porcentaje}
+                  onChange={(e) => setNewPond({ ...newPond, porcentaje: e.target.value })}
+                  className="w-1/3 text-sm px-3 py-2 rounded-lg border border-blue-200 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+                <button
+                  onClick={handleSavePonderacion}
+                  disabled={pondLoading || !newPond.nombre || !newPond.porcentaje}
+                  className="w-2/3 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-sm font-semibold rounded-lg flex items-center justify-center gap-2 transition-colors shadow-sm"
+                >
+                  {pondLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Guardar'}
                 </button>
               </div>
-            )}
+              {pondError && <p className="text-xs text-red-600 font-medium">{pondError}</p>}
+              <button onClick={() => { setIsAddingPond(false); setPondError(''); }} className="w-full text-xs text-slate-500 hover:text-slate-700 font-medium">
+                Cancelar
+              </button>
+            </motion.div>
+          ) : (
+            <button
+              onClick={() => setIsAddingPond(true)}
+              disabled={totalPct >= 100}
+              className="w-full border-2 border-dashed border-blue-200 text-blue-600 hover:bg-blue-50 hover:border-blue-400 disabled:opacity-40 disabled:cursor-not-allowed font-semibold py-2.5 rounded-xl transition-all flex items-center justify-center gap-2"
+            >
+              <Plus className="w-4 h-4" /> Agregar Ponderación
+            </button>
+          )}
+        </div>
 
-            {uploadMessage.text && !previewStudents.length && (
-              <motion.div initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }} className={`mt-4 p-3 rounded-xl flex items-start gap-2 text-sm border ${uploadMessage.type === 'success' ? 'bg-green-50 text-green-700 border-green-200' : 'bg-red-50 text-red-700 border-red-200'}`}>
-                {uploadMessage.type === 'success' ? <CheckCircle className="w-5 h-5 shrink-0" /> : <AlertCircle className="w-5 h-5 shrink-0" />}
-                <p className="font-medium mt-0.5">{uploadMessage.text}</p>
-              </motion.div>
-            )}
-          </div>
-        </motion.div>
-      )}
-
-      {/* ---------------- PESTAÑA 3: EVALUACIÓN Y PONDERACIONES ---------------- */}
-      {activeTab === 'evaluacion' && (
-        <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          <div className="bg-white p-6 rounded-2xl shadow-sm border border-blue-100">
-            <h3 className="font-bold text-slate-800 mb-4 flex items-center gap-2">
-              <Percent className="w-5 h-5 text-blue-600" />
-              Ponderaciones
-            </h3>
-            <p className="text-sm text-slate-500 mb-6">Define los porcentajes de evaluación para esta materia.</p>
-            
-            <div className="space-y-3 mb-6">
-              {ponderaciones.map(pond => (
-                <div key={pond.id} className="flex justify-between items-center bg-slate-50 p-4 rounded-xl border border-slate-100 hover:border-blue-200 transition-colors">
-                  <span className="text-sm font-semibold text-slate-700">{pond.nombre}</span>
-                  <span className="text-sm font-bold text-blue-600 bg-blue-100 px-3 py-1 rounded-lg">{pond.porcentaje}%</span>
-                </div>
-              ))}
-            </div>
-
-            <div className="pt-4 border-t border-slate-100 flex justify-between items-center">
-              <span className="text-base font-bold text-slate-600">Total Evaluado:</span>
-              <span className="text-lg font-black text-green-600">
-                {ponderaciones.reduce((acc, curr) => acc + curr.porcentaje, 0)}%
-              </span>
-            </div>
-
-            <button className="w-full mt-6 border-2 border-dashed border-blue-200 text-blue-600 hover:bg-blue-50 hover:border-blue-400 font-semibold py-2.5 rounded-xl transition-all">
-              + Agregar Ponderación
+        {/* Activities panel */}
+        <div className="lg:col-span-2 bg-white p-6 rounded-2xl shadow-sm border border-blue-100">
+          <h3 className="font-bold text-slate-800 mb-4 flex items-center gap-2">
+            <CheckSquare className="w-5 h-5 text-blue-600" /> Gestión de Actividades
+          </h3>
+          <div className="flex gap-2 bg-slate-50 p-1.5 rounded-xl border border-slate-200 w-fit mb-5">
+            <button
+              onClick={() => setActiveEvalTab('import')}
+              className={`px-4 py-2 text-sm font-semibold rounded-lg transition-all ${activeEvalTab === 'import' ? 'bg-blue-600 text-white shadow-md' : 'text-slate-600 hover:bg-white'}`}
+            >
+              Importar calificaciones
+            </button>
+            <button
+              onClick={() => setActiveEvalTab('concentrado')}
+              className={`px-4 py-2 text-sm font-semibold rounded-lg transition-all ${activeEvalTab === 'concentrado' ? 'bg-blue-600 text-white shadow-md' : 'text-slate-600 hover:bg-white'}`}
+            >
+              Concentrado
             </button>
           </div>
 
-          <div className="lg:col-span-2 bg-white p-6 rounded-2xl shadow-sm border border-blue-100">
-            <h3 className="font-bold text-slate-800 mb-4 flex items-center gap-2">
-              <CheckSquare className="w-5 h-5 text-blue-600" />
-              Gestión de Actividades
-            </h3>
-            <p className="text-sm text-slate-500 mb-6">Selecciona una ponderación y carga las actividades o calificaciones correspondientes a tus alumnos.</p>
-            
-            <div className="flex flex-col items-center justify-center py-16 px-4 border-2 border-dashed border-slate-200 rounded-2xl bg-slate-50">
-              <div className="w-16 h-16 bg-blue-100 rounded-full flex items-center justify-center mb-4">
-                <Upload className="w-8 h-8 text-blue-600" />
-              </div>
-              <h4 className="text-lg font-semibold text-slate-800 mb-2">Aún no hay actividades</h4>
-              <p className="text-sm text-slate-500 text-center max-w-sm mb-6">
-                Aquí podrás subir las plantillas de Excel con las calificaciones de tus alumnos o crear actividades individuales.
+          {activeEvalTab === 'import' ? (
+            <div className="space-y-4">
+              <p className="text-sm text-slate-500">
+                Sube un archivo donde las columnas de actividades coincidan por nombre con tus ponderaciones. Debe incluir una columna de matrícula.
               </p>
-              <button className="bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2.5 px-6 rounded-xl transition-all shadow-md">
-                Importar Actividades
-              </button>
+              <div className="border-2 border-dashed border-blue-200 rounded-2xl p-6 bg-blue-50/50">
+                <input
+                  type="file"
+                  accept=".csv,.xlsx"
+                  onChange={(e) => { setGradesFile(e.target.files?.[0] || null); setGradesPreview([]); setGradesMessage({ text: '', type: '' }); }}
+                  className="block w-full text-sm text-slate-500 file:mr-4 file:py-2.5 file:px-6 file:rounded-xl file:border-0 file:text-sm file:font-bold file:bg-blue-100 file:text-blue-700 hover:file:bg-blue-200 transition-colors cursor-pointer"
+                />
+              </div>
+              <div className="flex gap-3">
+                <button
+                  onClick={handleGradesPreview}
+                  disabled={!gradesFile || ponderaciones.length === 0}
+                  className="flex-1 bg-slate-800 hover:bg-slate-900 text-white py-2.5 rounded-xl font-medium disabled:opacity-50"
+                >
+                  Previsualizar
+                </button>
+                <button
+                  onClick={handleImportGrades}
+                  disabled={gradesLoading || gradesPreview.length === 0}
+                  className="flex-1 bg-green-600 hover:bg-green-700 text-white py-2.5 rounded-xl font-medium disabled:opacity-50 flex items-center justify-center gap-2"
+                >
+                  {gradesLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
+                  Importar
+                </button>
+              </div>
+
+              {gradesMessage.text && (
+                <div className={`p-3 rounded-xl text-sm border ${gradesMessage.type === 'success' ? 'bg-green-50 text-green-700 border-green-200' : 'bg-red-50 text-red-700 border-red-200'}`}>
+                  {gradesMessage.text}
+                </div>
+              )}
+
+              {gradesPreview.length > 0 && (
+                <div className="border border-slate-200 rounded-xl overflow-hidden">
+                  <div className="bg-slate-50 px-4 py-2 text-xs text-slate-500">
+                    Vista previa (primeras {Math.min(gradesPreview.length, 10)} filas)
+                  </div>
+                  <div className="p-4 space-y-2">
+                    {gradesPreview.slice(0, 10).map((r, idx) => (
+                      <div key={idx} className="text-sm">
+                        <span className="font-mono text-slate-600">{r.matricula}</span>
+                        <span className="text-slate-400"> — </span>
+                        <span className="text-slate-700">
+                          {Object.entries(r.calificaciones).slice(0, 4).map(([k, v]) => `${k}: ${v}`).join(', ')}
+                          {Object.keys(r.calificaciones).length > 4 ? '…' : ''}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
-          </div>
-        </motion.div>
-      )}
-    </div>
+          ) : (
+            <div className="space-y-4">
+              <p className="text-sm text-slate-500">
+                Concentrado de promedios actuales (sumatoria de puntajes). Promedio redondeado a 2 decimales.
+              </p>
+              {concentradoLoading ? (
+                <div className="flex items-center gap-2 text-slate-500">
+                  <Loader2 className="w-5 h-5 animate-spin" /> Cargando concentrado...
+                </div>
+              ) : (
+                <div className="border border-slate-200 rounded-xl overflow-hidden">
+                  <table className="w-full text-left text-sm">
+                    <thead className="bg-slate-50 text-slate-500 text-xs uppercase tracking-wider">
+                      <tr>
+                        <th className="px-4 py-3 font-semibold">Matrícula</th>
+                        <th className="px-4 py-3 font-semibold">Nombre</th>
+                        <th className="px-4 py-3 font-semibold text-right">Promedio</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {concentrado.length === 0 ? (
+                        <tr><td colSpan={3} className="px-4 py-8 text-center text-slate-400">Sin alumnos activos.</td></tr>
+                      ) : (
+                        concentrado.map((s) => (
+                          <tr key={s.id} className="hover:bg-slate-50">
+                            <td className="px-4 py-3 font-mono text-xs text-slate-600">{s.matricula}</td>
+                            <td className="px-4 py-3 font-medium text-slate-800">{s.nombre}</td>
+                            <td className="px-4 py-3 text-right font-bold text-slate-900">{Number(s.promedio).toFixed(2)}</td>
+                          </tr>
+                        ))
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+    </>
   );
 }
