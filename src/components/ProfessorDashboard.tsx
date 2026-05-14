@@ -959,65 +959,136 @@ function EvaluationTab({ subject }: { subject: Subject }) {
       .replace(/\s+/g, ' ')
       .trim();
 
-  const handleGradesPreview = async () => {
-    if (!gradesFile) return;
-    setGradesMessage({ text: '', type: '' });
-
-    try {
-      const buf = await gradesFile.arrayBuffer();
-      const workbook = XLSX.read(buf, { type: 'array' });
-      const worksheet = workbook.Sheets[workbook.SheetNames[0]];
-      const jsonData = XLSX.utils.sheet_to_json<any[]>(worksheet, { header: 1 });
-      if (!Array.isArray(jsonData) || jsonData.length < 2) {
-        setGradesMessage({ text: 'El archivo no tiene filas suficientes.', type: 'error' });
-        return;
-      }
-
-      const header = (jsonData[0] ?? []).map((h: any) => String(h ?? '').trim());
-      const headerNorm = header.map((h: string) => normalize(h));
-      const idxMat = headerNorm.findIndex((h: string) => /matricula|numero de id|id/.test(h));
-      if (idxMat < 0) {
-        setGradesMessage({ text: 'No se encontró columna de matrícula/ID en el archivo.', type: 'error' });
-        return;
-      }
-
-      const pondNameSet = new Set(ponderaciones.map((p) => normalize(p.nombre)));
-      const pondCols = header
-        .map((h: string, i: number) => ({ h, i, hn: normalize(h) }))
-        .filter((c) => c.i !== idxMat && pondNameSet.has(c.hn));
-
-      if (pondCols.length === 0) {
-        setGradesMessage({ text: 'No detecté columnas que coincidan con tus ponderaciones (por nombre).', type: 'error' });
-        return;
-      }
-
-      const preview: Array<{ matricula: string; calificaciones: Record<string, number> }> = [];
-      for (let r = 1; r < jsonData.length; r++) {
-        const row = jsonData[r];
-        if (!row) continue;
-        const matricula = String(row[idxMat] ?? '').trim();
-        if (!matricula) continue;
-
-        const calificaciones: Record<string, number> = {};
-        pondCols.forEach((c) => {
-          const val = row[c.i];
-          const num = Number(val);
-          if (!Number.isNaN(num)) calificaciones[c.h] = num;
-        });
-        preview.push({ matricula, calificaciones });
-      }
-
-      if (preview.length === 0) {
-        setGradesMessage({ text: 'No se detectaron filas válidas de alumnos.', type: 'error' });
-        return;
-      }
-
-      setGradesPreview(preview.slice(0, 200)); // preview limitado
-      setGradesMessage({ text: `Detectadas ${preview.length} filas (mostrando hasta 200).`, type: 'success' });
-    } catch {
-      setGradesMessage({ text: 'No se pudo leer el archivo. Usa .xlsx o .csv exportado como Excel.', type: 'error' });
-    }
-  };
+      const handleGradesPreview = async () => {
+        if (!gradesFile) return;
+        setGradesMessage({ text: '', type: '' });
+      
+        try {
+          const buf = await gradesFile.arrayBuffer();
+          const workbook = XLSX.read(buf, { type: 'array' });
+          const worksheet = workbook.Sheets[workbook.SheetNames[0]];
+      
+          // Leer con defval vacío para no perder celdas
+          const jsonData = XLSX.utils.sheet_to_json<any[]>(worksheet, {
+            header: 1,
+            defval: '',
+            blankrows: false,
+          });
+      
+          if (!Array.isArray(jsonData) || jsonData.length < 2) {
+            setGradesMessage({ text: 'El archivo no tiene filas suficientes.', type: 'error' });
+            return;
+          }
+      
+          // Buscar la fila de encabezado: la primera que tenga al menos 3 celdas no vacías
+          // y que contenga alguna ponderación o palabra clave de matrícula
+          const pondNamesNorm = new Set(ponderaciones.map((p) => normalize(p.nombre)));
+      
+          let headerRowIdx = -1;
+          for (let i = 0; i < Math.min(jsonData.length, 20); i++) {
+            const row = jsonData[i] as any[];
+            const cells = row.map((c) => normalize(String(c ?? '')));
+            const hasMatricula = cells.some(
+              (c) => /matricula|numero de id|num.*id|^id$|num.*alumno/.test(c)
+            );
+            // También acepta si tiene columna "nombre" + alguna ponderación
+            const hasPond = cells.some((c) => pondNamesNorm.has(c));
+            const hasNombre = cells.some((c) => /nombre.*alumno|alumno/.test(c));
+            if (hasMatricula || (hasPond && hasNombre)) {
+              headerRowIdx = i;
+              break;
+            }
+          }
+      
+          // Si no encontró por palabras clave, tomar la primera fila con más de 3 celdas llenas
+          if (headerRowIdx < 0) {
+            for (let i = 0; i < Math.min(jsonData.length, 10); i++) {
+              const filled = (jsonData[i] as any[]).filter((c) => String(c ?? '').trim() !== '');
+              if (filled.length >= 3) { headerRowIdx = i; break; }
+            }
+          }
+      
+          if (headerRowIdx < 0) {
+            setGradesMessage({ text: 'No se encontró fila de encabezado válida.', type: 'error' });
+            return;
+          }
+      
+          const header = (jsonData[headerRowIdx] as any[]).map((h) => String(h ?? '').trim());
+          const headerNorm = header.map((h) => normalize(h));
+      
+          // Buscar columna de matrícula con criterios amplios
+          let idxMat = headerNorm.findIndex(
+            (h) => /matricula|numero de id|num.*id|^id$/.test(h)
+          );
+      
+          // Fallback: buscar columna cuyo contenido en las filas de datos sea numérico de 6+ dígitos
+          if (idxMat < 0) {
+            for (let col = 0; col < header.length; col++) {
+              let numericCount = 0;
+              for (let row = headerRowIdx + 1; row < Math.min(jsonData.length, headerRowIdx + 10); row++) {
+                const val = String((jsonData[row] as any[])[col] ?? '').trim();
+                if (/^\d{6,}$/.test(val)) numericCount++;
+              }
+              if (numericCount >= 2) { idxMat = col; break; }
+            }
+          }
+      
+          if (idxMat < 0) {
+            setGradesMessage({
+              text: 'No se encontró columna de matrícula. Asegúrate de que haya una columna con matrículas numéricas (ej. "Matrícula" o "Número de ID").',
+              type: 'error',
+            });
+            return;
+          }
+      
+          // Detectar columnas de ponderaciones por nombre normalizado
+          const pondCols = header
+            .map((h, i) => ({ h, i, hn: normalize(h) }))
+            .filter((c) => c.i !== idxMat && pondNamesNorm.has(c.hn));
+      
+          if (pondCols.length === 0) {
+            setGradesMessage({
+              text: `No detecté columnas que coincidan con tus ponderaciones (${ponderaciones.map((p) => p.nombre).join(', ')}). Verifica que los encabezados del Excel sean exactamente iguales.`,
+              type: 'error',
+            });
+            return;
+          }
+      
+          const preview: Array<{ matricula: string; calificaciones: Record<string, number> }> = [];
+          for (let r = headerRowIdx + 1; r < jsonData.length; r++) {
+            const row = jsonData[r] as any[];
+            const matricula = String(row[idxMat] ?? '').trim().replace(/\D/g, '');
+            if (!matricula || matricula.length < 5) continue;
+      
+            const calificaciones: Record<string, number> = {};
+            pondCols.forEach((c) => {
+              const val = row[c.i];
+              const num = Number(val);
+              if (!Number.isNaN(num)) calificaciones[c.h] = num;
+            });
+      
+            if (Object.keys(calificaciones).length > 0) {
+              preview.push({ matricula, calificaciones });
+            }
+          }
+      
+          if (preview.length === 0) {
+            setGradesMessage({ text: 'No se detectaron filas válidas de alumnos con calificaciones.', type: 'error' });
+            return;
+          }
+      
+          setGradesPreview(preview.slice(0, 200));
+          setGradesMessage({
+            text: `Detectadas ${preview.length} filas con columnas: ${pondCols.map((c) => c.h).join(', ')}.`,
+            type: 'success',
+          });
+        } catch {
+          setGradesMessage({
+            text: 'No se pudo leer el archivo. Usa .xlsx exportado desde Excel.',
+            type: 'error',
+          });
+        }
+      };
 
   const handleImportGrades = async () => {
     if (gradesPreview.length === 0) return;
