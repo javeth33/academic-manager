@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Upload, CheckCircle, AlertCircle, BookOpen, PlusCircle } from 'lucide-react';
+import { Upload, CheckCircle, AlertCircle, BookOpen, PlusCircle, Search } from 'lucide-react';
 
 export default function AdminDashboard() {
   const [isUploading, setIsUploading] = useState(false);
@@ -16,6 +16,12 @@ export default function AdminDashboard() {
   const [isSubmittingManual, setIsSubmittingManual] = useState(false);
   const [manualMessage, setManualMessage] = useState<{ text: string; type: 'success' | 'error' | '' }>({ text: '', type: '' });
 
+  // Función helper para mandar los headers con el token
+  const authedHeaders = () => ({
+    'Content-Type': 'application/json',
+    Authorization: `Bearer ${localStorage.getItem('token')}`,
+  });
+
   const handleFileUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
@@ -30,7 +36,7 @@ export default function AdminDashboard() {
         const text = e.target?.result as string;
         const lines = text.split('\n').map(line => line.replace('\r', '')).filter(line => line.trim() !== '');
         
-        // 🌟 NUEVA LÓGICA DE AGRUPACIÓN POR NRC
+        // LÓGICA DE AGRUPACIÓN POR NRC
         const subjectsMap = new Map();
 
         lines.slice(1).forEach(line => {
@@ -51,7 +57,7 @@ export default function AdminDashboard() {
             if (scheduleStr) {
               existingSubject.schedule += ` / ${scheduleStr}`;
             }
-            // Agregamos el salón solo si es diferente para no repetir "Salón 102 / Salón 102"
+            // Agregamos el salón solo si es diferente
             if (classroom && !existingSubject.classroom.includes(classroom)) {
               existingSubject.classroom += ` / ${classroom}`;
             }
@@ -71,9 +77,10 @@ export default function AdminDashboard() {
         const subjects = Array.from(subjectsMap.values());
         console.log("Materias agrupadas listas para enviar:", subjects);
 
+        // AQUÍ SE AGREGA EL TOKEN AL FETCH
         const response = await fetch('/api/admin/subjects/bulk', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: authedHeaders(),
           body: JSON.stringify({ subjects })
         });
 
@@ -106,16 +113,22 @@ export default function AdminDashboard() {
     setManualMessage({ text: '', type: '' });
 
     try {
+      // AQUÍ SE AGREGA EL TOKEN AL FETCH
       const response = await fetch('/api/admin/subjects', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: authedHeaders(),
         body: JSON.stringify(manualSubject)
       });
 
       const data = await response.json();
 
       if (data.success) {
-        setManualMessage({ text: '¡Materia registrada exitosamente!', type: 'success' });
+        setManualMessage({ 
+          text: data.linked 
+            ? '¡Materia registrada y profesor vinculado exitosamente!' 
+            : '¡Materia registrada! (Profesor guardado en espera de registro)', 
+          type: 'success' 
+        });
         setManualSubject({ nrc: '', name: '', schedule: '', classroom: '', professorName: '' });
       } else {
         setManualMessage({ text: data.message || 'Error al registrar la materia.', type: 'error' });
@@ -135,6 +148,7 @@ export default function AdminDashboard() {
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+        {/* Tarjeta de Carga Masiva */}
         <div className="bg-white p-6 rounded-xl shadow-sm border border-blue-100">
           <div className="flex items-center gap-3 mb-4">
             <div className="p-2 bg-blue-100 rounded-lg text-blue-600">
@@ -184,6 +198,7 @@ export default function AdminDashboard() {
           )}
         </div>
 
+        {/* Tarjeta de Información */}
         <div className="space-y-6">
           <div className="bg-gradient-to-br from-blue-600 to-blue-800 p-6 rounded-xl shadow-md text-white h-full">
             <div className="flex items-center gap-3 mb-2">
@@ -194,12 +209,13 @@ export default function AdminDashboard() {
               <strong>Agrupación Inteligente:</strong> El sistema detecta si una materia (NRC) tiene varios días/horarios en diferentes filas del Excel y los agrupa en un solo registro automáticamente.
             </p>
             <p className="text-blue-100 text-sm leading-relaxed mb-4">
-              <strong>Asignación Automática:</strong> El sistema comparará el nombre del profesor con los usuarios registrados. Si el profesor aún no tiene cuenta, el sistema guardará su materia "en espera" y se la asignará automáticamente en cuanto se registre.
+              <strong>Búsqueda Inteligente:</strong> Al registrar una materia, el sistema buscará al profesor en la base de datos por nombre o apellido. Si no lo encuentra, guardará la materia "en espera" y se la asignará en cuanto se registre en la plataforma.
             </p>
           </div>
         </div>
       </div>
 
+      {/* Formulario de Registro Manual */}
       <div className="mt-8 bg-white p-6 rounded-xl shadow-sm border border-blue-100">
         <div className="flex items-center gap-3 mb-6">
           <div className="p-2 bg-blue-100 rounded-lg text-blue-600">
@@ -258,15 +274,18 @@ export default function AdminDashboard() {
               />
             </div>
             <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1">Nombre del Profesor (En espera)</label>
+              <label className="block text-sm font-medium text-slate-700 mb-1 flex items-center gap-1">
+                Profesor a asignar <Search className="w-3 h-3 text-slate-400" />
+              </label>
               <input
                 type="text"
                 required
                 value={manualSubject.professorName}
                 onChange={(e) => setManualSubject({ ...manualSubject, professorName: e.target.value })}
                 className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                placeholder="Ej. ZENTENO VAZQUEZ ANA CLAUDIA"
+                placeholder="Ej. Horacio (Búsqueda inteligente)"
               />
+              <p className="text-xs text-slate-500 mt-1">El sistema buscará coincidencias. Si no existe, lo dejará en espera.</p>
             </div>
           </div>
 

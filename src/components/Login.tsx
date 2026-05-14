@@ -36,6 +36,10 @@ export default function Login({ onLogin }: LoginProps) {
       const data = await res.json();
 
       if (data.success) {
+        //Guardamos el token en el navegador
+        if (data.token) {
+          localStorage.setItem('token', data.token);
+        }
         onLogin(data.user);
       } else {
         setError(data.message || 'Error en la autenticación');
