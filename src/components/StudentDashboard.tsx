@@ -273,7 +273,11 @@ export default function StudentDashboard({ user }: StudentDashboardProps) {
 
 function SubjectDetailStudent({ subject, onBack }: { subject: any; onBack: () => void }) {
   const evaluaciones: any[] = subject.evaluaciones ?? [];
-  const totalObtenido = evaluaciones.reduce((acc: number, curr: any) => acc + (curr.porcentajeObtenido ?? 0), 0);
+  const promedioActual = evaluaciones.reduce((acc: number, curr: any) => {
+    const puntaje = Number(curr.porcentajeObtenido ?? 0);
+    const porcentaje = Number(curr.porcentajeTotal ?? 0);
+    return acc + puntaje * (porcentaje / 100);
+  }, 0);
   const hasEvaluaciones = evaluaciones.length > 0;
   const hasAnyGrade = evaluaciones.some((e: any) => e.porcentajeObtenido > 0);
   const actividadesCalificadas = evaluaciones.filter((e: any) => (e.porcentajeObtenido ?? 0) > 0).length;
@@ -281,7 +285,8 @@ function SubjectDetailStudent({ subject, onBack }: { subject: any; onBack: () =>
     .filter((e: any) => (e.porcentajeObtenido ?? 0) > 0)
     .reduce((acc: number, e: any) => acc + (e.porcentajeTotal ?? 0), 0);
   const pctCubiertoClamped = Math.min(100, Math.max(0, pctCubierto));
-  const promedioRedondeado = Math.round(totalObtenido * 100) / 100;
+  const promedioRedondeado = Number(promedioActual.toFixed(2));
+  const promedioPct = Math.min(100, Math.max(0, promedioActual * 10));
 
   return (
     <motion.div initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} className="space-y-6">
@@ -306,7 +311,7 @@ function SubjectDetailStudent({ subject, onBack }: { subject: any; onBack: () =>
               <span className="block text-sm font-bold text-slate-400 uppercase tracking-widest">Promedio Actual</span>
               {hasAnyGrade ? (
                 <span className="text-4xl font-black text-blue-600">
-                  {promedioRedondeado}<span className="text-lg text-slate-300">/100</span>
+                  {promedioRedondeado}<span className="text-lg text-slate-300">/10</span>
                 </span>
               ) : (
                 <span className="text-lg font-semibold text-slate-300">Sin calificaciones</span>
@@ -347,14 +352,14 @@ function SubjectDetailStudent({ subject, onBack }: { subject: any; onBack: () =>
             <div className="mt-6">
               <div className="flex justify-between text-xs font-bold mb-2 uppercase tracking-tighter">
                 <span className="text-slate-400">Progreso de Calificación</span>
-                <span className="text-blue-600">{totalObtenido}% acumulado</span>
+                <span className="text-blue-600">{promedioRedondeado} promedio</span>
               </div>
               <div className="w-full bg-slate-100 rounded-full h-3 overflow-hidden">
                 <motion.div
                   initial={{ width: 0 }}
-                  animate={{ width: `${Math.min(totalObtenido, 100)}%` }}
+                  animate={{ width: `${promedioPct}%` }}
                   transition={{ duration: 1, ease: 'easeOut' }}
-                  className={`h-full rounded-full ${totalObtenido >= 60 ? 'bg-green-500' : 'bg-blue-600'}`}
+                  className={`h-full rounded-full ${promedioActual >= 6 ? 'bg-green-500' : 'bg-blue-600'}`}
                 />
               </div>
             </div>
@@ -376,9 +381,7 @@ function SubjectDetailStudent({ subject, onBack }: { subject: any; onBack: () =>
           ) : (
             <div className="grid grid-cols-1 gap-4">
               {evaluaciones.map((evaluacion: any) => {
-                const ratio = evaluacion.porcentajeTotal > 0
-                  ? (evaluacion.porcentajeObtenido / evaluacion.porcentajeTotal) * 100
-                  : 0;
+                const ratio = Math.min(100, Math.max(0, (evaluacion.porcentajeObtenido / 10) * 100));
                 const graded = evaluacion.porcentajeObtenido > 0;
 
                 return (
@@ -401,7 +404,7 @@ function SubjectDetailStudent({ subject, onBack }: { subject: any; onBack: () =>
                         </div>
                         <div className="text-right min-w-[60px]">
                           <span className="text-lg font-bold text-slate-800">{evaluacion.porcentajeObtenido}</span>
-                          <span className="text-sm text-slate-400">/{evaluacion.porcentajeTotal}</span>
+                          <span className="text-sm text-slate-400">/10</span>
                         </div>
                       </div>
                     ) : (
@@ -424,7 +427,7 @@ function SubjectDetailStudent({ subject, onBack }: { subject: any; onBack: () =>
             <h4 className="text-2xl font-bold mb-4">
               {!hasAnyGrade
                 ? 'Sin datos aún'
-                : totalObtenido >= 60
+                : promedioActual >= 6
                 ? 'Aprobado'
                 : 'En proceso'}
             </h4>

@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Users, Clock, Calendar, Upload, CheckSquare, ArrowLeft, MapPin, Loader2, CheckCircle, AlertCircle, QrCode, X, Percent, Plus } from 'lucide-react';
+import { Users, Clock, Calendar, Upload, CheckSquare, ArrowLeft, MapPin, Loader2, CheckCircle, AlertCircle, QrCode, X, Percent, Plus, Pencil, Save, Trash2 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import QRScanner from './QRScanner';
 import * as XLSX from 'xlsx';
@@ -915,11 +915,16 @@ function StudentsTab({ subject }: { subject: Subject }) {
 
 // ─── EvaluationTab ────────────────────────────────────────────────────────────
 
+// ─── EvaluationTab (REPARADO) ────────────────────────────────────────────────
+
 function EvaluationTab({ subject }: { subject: Subject }) {
   const [ponderaciones, setPonderaciones] = useState<Ponderacion[]>([]);
   const [isAddingPond, setIsAddingPond] = useState(false);
   const [newPond, setNewPond] = useState({ nombre: '', porcentaje: '' });
+  const [editingPondId, setEditingPondId] = useState<number | null>(null);
+  const [editPond, setEditPond] = useState({ nombre: '', porcentaje: '' });
   const [pondLoading, setPondLoading] = useState(false);
+  const [deletingPondId, setDeletingPondId] = useState<number | null>(null);
   const [pondError, setPondError] = useState('');
 
   const totalPct = ponderaciones.reduce((a, c) => a + c.porcentaje, 0);
@@ -939,6 +944,7 @@ function EvaluationTab({ subject }: { subject: Subject }) {
 
   const fetchPonderaciones = useCallback(async () => {
     try {
+      const subjectId = (subject as any).uuid || subject.id;
       const res = await fetch(`/api/professor/subject/${subject.id}/ponderaciones`, {
         headers: { Authorization: `Bearer ${localStorage.getItem('token')}` },
       });
@@ -951,150 +957,193 @@ function EvaluationTab({ subject }: { subject: Subject }) {
 
   useEffect(() => { fetchPonderaciones(); }, [fetchPonderaciones]);
 
-  const normalize = (s: string) =>
-    s
-      .toLowerCase()
-      .normalize('NFD')
-      .replace(/[\u0300-\u036f]/g, '')
-      .replace(/\s+/g, ' ')
-      .trim();
+  // ─── FUNCIÓN REPARADA: handleGradesPreview ────────────────────────────────
+  
+  //  FUNCIÓN REPARADA: handleGradesPreview
+// Detecta correctamente archivos Excel con estructura de PESOS en una fila y ACTIVIDADES en otra
 
-      const handleGradesPreview = async () => {
-        if (!gradesFile) return;
-        setGradesMessage({ text: '', type: '' });
-      
-        try {
-          const buf = await gradesFile.arrayBuffer();
-          const workbook = XLSX.read(buf, { type: 'array' });
-          const worksheet = workbook.Sheets[workbook.SheetNames[0]];
-      
-          // Leer con defval vacío para no perder celdas
-          const jsonData = XLSX.utils.sheet_to_json<any[]>(worksheet, {
-            header: 1,
-            defval: '',
-            blankrows: false,
-          });
-      
-          if (!Array.isArray(jsonData) || jsonData.length < 2) {
-            setGradesMessage({ text: 'El archivo no tiene filas suficientes.', type: 'error' });
-            return;
-          }
-      
-          // Buscar la fila de encabezado: la primera que tenga al menos 3 celdas no vacías
-          // y que contenga alguna ponderación o palabra clave de matrícula
-          const pondNamesNorm = new Set(ponderaciones.map((p) => normalize(p.nombre)));
-      
-          let headerRowIdx = -1;
-          for (let i = 0; i < Math.min(jsonData.length, 20); i++) {
-            const row = jsonData[i] as any[];
-            const cells = row.map((c) => normalize(String(c ?? '')));
-            const hasMatricula = cells.some(
-              (c) => /matricula|numero de id|num.*id|^id$|num.*alumno/.test(c)
-            );
-            // También acepta si tiene columna "nombre" + alguna ponderación
-            const hasPond = cells.some((c) => pondNamesNorm.has(c));
-            const hasNombre = cells.some((c) => /nombre.*alumno|alumno/.test(c));
-            if (hasMatricula || (hasPond && hasNombre)) {
-              headerRowIdx = i;
-              break;
-            }
-          }
-      
-          // Si no encontró por palabras clave, tomar la primera fila con más de 3 celdas llenas
-          if (headerRowIdx < 0) {
-            for (let i = 0; i < Math.min(jsonData.length, 10); i++) {
-              const filled = (jsonData[i] as any[]).filter((c) => String(c ?? '').trim() !== '');
-              if (filled.length >= 3) { headerRowIdx = i; break; }
-            }
-          }
-      
-          if (headerRowIdx < 0) {
-            setGradesMessage({ text: 'No se encontró fila de encabezado válida.', type: 'error' });
-            return;
-          }
-      
-          const header = (jsonData[headerRowIdx] as any[]).map((h) => String(h ?? '').trim());
-          const headerNorm = header.map((h) => normalize(h));
-      
-          // Buscar columna de matrícula con criterios amplios
-          let idxMat = headerNorm.findIndex(
-            (h) => /matricula|numero de id|num.*id|^id$/.test(h)
-          );
-      
-          // Fallback: buscar columna cuyo contenido en las filas de datos sea numérico de 6+ dígitos
-          if (idxMat < 0) {
-            for (let col = 0; col < header.length; col++) {
-              let numericCount = 0;
-              for (let row = headerRowIdx + 1; row < Math.min(jsonData.length, headerRowIdx + 10); row++) {
-                const val = String((jsonData[row] as any[])[col] ?? '').trim();
-                if (/^\d{6,}$/.test(val)) numericCount++;
-              }
-              if (numericCount >= 2) { idxMat = col; break; }
-            }
-          }
-      
-          if (idxMat < 0) {
-            setGradesMessage({
-              text: 'No se encontró columna de matrícula. Asegúrate de que haya una columna con matrículas numéricas (ej. "Matrícula" o "Número de ID").',
-              type: 'error',
-            });
-            return;
-          }
-      
-          // Detectar columnas de ponderaciones por nombre normalizado
-          const pondCols = header
-            .map((h, i) => ({ h, i, hn: normalize(h) }))
-            .filter((c) => c.i !== idxMat && pondNamesNorm.has(c.hn));
-      
-          if (pondCols.length === 0) {
-            setGradesMessage({
-              text: `No detecté columnas que coincidan con tus ponderaciones (${ponderaciones.map((p) => p.nombre).join(', ')}). Verifica que los encabezados del Excel sean exactamente iguales.`,
-              type: 'error',
-            });
-            return;
-          }
-      
-          const preview: Array<{ matricula: string; calificaciones: Record<string, number> }> = [];
-          for (let r = headerRowIdx + 1; r < jsonData.length; r++) {
-            const row = jsonData[r] as any[];
-            const matricula = String(row[idxMat] ?? '').trim().replace(/\D/g, '');
-            if (!matricula || matricula.length < 5) continue;
-      
-            const calificaciones: Record<string, number> = {};
-            pondCols.forEach((c) => {
-              const val = row[c.i];
-              const num = Number(val);
-              if (!Number.isNaN(num)) calificaciones[c.h] = num;
-            });
-      
-            if (Object.keys(calificaciones).length > 0) {
-              preview.push({ matricula, calificaciones });
-            }
-          }
-      
-          if (preview.length === 0) {
-            setGradesMessage({ text: 'No se detectaron filas válidas de alumnos con calificaciones.', type: 'error' });
-            return;
-          }
-      
-          setGradesPreview(preview.slice(0, 200));
-          setGradesMessage({
-            text: `Detectadas ${preview.length} filas con columnas: ${pondCols.map((c) => c.h).join(', ')}.`,
-            type: 'success',
-          });
-        } catch {
-          setGradesMessage({
-            text: 'No se pudo leer el archivo. Usa .xlsx exportado desde Excel.',
-            type: 'error',
-          });
+const handleGradesPreview = async () => {
+  if (!gradesFile) return;
+  setGradesMessage({ text: '', type: '' });
+
+  try {
+    const buf = await gradesFile.arrayBuffer();
+    const workbook = XLSX.read(buf, { type: 'array' });
+    const worksheet = workbook.Sheets[workbook.SheetNames[0]];
+
+    // Leer con defval vacío para no perder celdas
+    const jsonData = XLSX.utils.sheet_to_json<any[]>(worksheet, {
+      header: 1,
+      defval: '',
+      blankrows: false,
+    });
+
+    if (!Array.isArray(jsonData) || jsonData.length < 2) {
+      setGradesMessage({ text: 'El archivo no tiene filas suficientes.', type: 'error' });
+      return;
+    }
+
+    // ─── PASO 1: Detectar fila de PESOS ────────────────────────
+    // Buscar fila donde hay números decimales (0.1, 0.2, 0.3) que corresponden a ponderaciones
+    let pesosRowIdx = -1;
+    for (let i = 0; i < Math.min(jsonData.length, 15); i++) {
+      const row = jsonData[i] as any[];
+      const pesos = row.filter(
+        (cell) => typeof cell === 'number' && cell > 0 && cell < 1
+      );
+      // Si encuentra 3+ números que podrían ser pesos (0.1-1.0), probablemente es la fila de pesos
+      if (pesos.length >= 3) {
+        pesosRowIdx = i;
+        break;
+      }
+    }
+
+    // ─── PASO 2: Detectar fila de ACTIVIDADES ────────────────────
+    // Está justo debajo de pesos o cerca del inicio
+    let actividadesRowIdx = pesosRowIdx >= 0 ? pesosRowIdx + 1 : 0;
+
+    // Validación: la fila de actividades debe tener nombres de texto
+    const actividadesRow = jsonData[actividadesRowIdx] as any[];
+    const textCells = actividadesRow.filter(
+      (cell) => typeof cell === 'string' && cell.trim().length > 2
+    );
+    if (textCells.length < 3) {
+      setGradesMessage({
+        text: 'No se detectó fila con nombres de actividades. Estructura esperada: Fila de pesos + Fila de actividades + Datos.',
+        type: 'error',
+      });
+      return;
+    }
+
+    // ─── PASO 3: Mapear columnas de PONDERACIONES ────────────────
+    const pondMapping = new Map<number, { nombre: string; peso: number }>();
+
+    if (pesosRowIdx >= 0) {
+      const pesosRow = jsonData[pesosRowIdx] as any[];
+      const actRow = jsonData[actividadesRowIdx] as any[];
+
+      for (let col = 0; col < actRow.length; col++) {
+        const peso = pesosRow[col];
+        const nombre = String(actRow[col] ?? '').trim();
+
+        if (typeof peso === 'number' && peso > 0 && peso < 1 && nombre) {
+          pondMapping.set(col, { nombre, peso });
         }
-      };
+      }
+    }
+
+    if (pondMapping.size === 0) {
+      setGradesMessage({
+        text: 'No se detectaron columnas de ponderación. Verifica que haya pesos (0.1, 0.2, etc.) en la estructura del archivo.',
+        type: 'error',
+      });
+      return;
+    }
+
+    // ─── PASO 4: Detectar columnas de MATRÍCULA y NOMBRE ──────────
+    const dataStartRow = actividadesRowIdx + 1; // Datos de alumnos comienzan aquí
+    const firstDataRow = jsonData[dataStartRow] as any[];
+
+    let idxMatricula = -1;
+    let idxNombre = -1;
+
+    // Buscar por posición típica (columna 2-3 suelen ser nombre/ID en BUAP)
+    const potentialNameCols = [1, 2]; // Columnas más comunes para nombres
+    const potentialIdCols = [2, 3];   // Columnas más comunes para ID
+
+    // Estrategia 1: Buscar por contenido numérico en filas de datos
+    for (let col = 0; col < 5; col++) {
+      let numericCount = 0;
+      for (let row = dataStartRow; row < Math.min(jsonData.length, dataStartRow + 5); row++) {
+        const val = String((jsonData[row] as any[])[col] ?? '').trim();
+        // Matrícula: 6+ dígitos
+        if (/^\d{6,}$/.test(val)) numericCount++;
+      }
+      if (numericCount >= 1 && idxMatricula < 0) idxMatricula = col;
+    }
+
+    // Estrategia 2: Nombre está típicamente en columna 1 o 2
+    if (idxNombre < 0) {
+      for (const col of potentialNameCols) {
+        const val = String((jsonData[dataStartRow] as any[])[col] ?? '').trim();
+        if (val && val.length > 3 && !/^\d+$/.test(val)) {
+          idxNombre = col;
+          break;
+        }
+      }
+    }
+
+    if (idxMatricula < 0 || idxNombre < 0) {
+      setGradesMessage({
+        text: 'No se encontraron columnas de Matrícula o Nombre. Estructura esperada: [Nombre | Matrícula | Actividades...]',
+        type: 'error',
+      });
+      return;
+    }
+
+    // ─── PASO 5: Extraer datos de ALUMNOS ──────────────────────────
+    const preview: Array<{ matricula: string; calificaciones: Record<string, number> }> = [];
+
+    for (let r = dataStartRow; r < jsonData.length; r++) {
+      const row = jsonData[r] as any[];
+      const matriculaRaw = String(row[idxMatricula] ?? '').trim().replace(/\D/g, '');
+
+      if (!matriculaRaw || matriculaRaw.length < 5) continue;
+
+      const calificaciones: Record<string, number> = {};
+
+      // Iterar sobre columnas mapeadas de ponderaciones
+      for (const [col, { nombre }] of pondMapping) {
+        const val = row[col];
+        const num = Number(val);
+        if (!Number.isNaN(num) && num >= 0) {
+          calificaciones[nombre] = num;
+        }
+      }
+
+      // Solo agregar si tiene al menos una calificación
+      if (Object.keys(calificaciones).length > 0) {
+        preview.push({
+          matricula: matriculaRaw,
+          calificaciones,
+        });
+      }
+    }
+
+    if (preview.length === 0) {
+      setGradesMessage({
+        text: 'No se detectaron filas válidas de alumnos con calificaciones.',
+        type: 'error',
+      });
+      return;
+    }
+
+    setGradesPreview(preview.slice(0, 200));
+    const pondNames = Array.from(pondMapping.values())
+      .map((p) => p.nombre)
+      .join(', ');
+    setGradesMessage({
+      text: `Detectadas ${preview.length} filas. Ponderaciones: ${pondNames}`,
+      type: 'success',
+    });
+  } catch (error) {
+    console.error('Error en handleGradesPreview:', error);
+    setGradesMessage({
+      text: 'No se pudo leer el archivo. Usa .xlsx exportado desde Excel.',
+      type: 'error',
+    });
+  }
+};
+
+
+  // ─────────────────────────────────────────────────────────────────────────
 
   const handleImportGrades = async () => {
     if (gradesPreview.length === 0) return;
     setGradesLoading(true);
     setGradesMessage({ text: '', type: '' });
     try {
+      const subjectId = (subject as any).uuid || subject.id;
       const res = await fetch(`/api/professor/subject/${subject.id}/calificaciones/import`, {
         method: 'POST',
         headers: authedHeaders(),
@@ -1118,6 +1167,7 @@ function EvaluationTab({ subject }: { subject: Subject }) {
   const fetchConcentrado = useCallback(async () => {
     setConcentradoLoading(true);
     try {
+      const subjectId = (subject as any).uuid || subject.id;
       const res = await fetch(`/api/professor/subject/${subject.id}/concentrado`, {
         headers: { Authorization: `Bearer ${localStorage.getItem('token')}` },
       });
@@ -1145,6 +1195,7 @@ function EvaluationTab({ subject }: { subject: Subject }) {
     setPondLoading(true);
 
     try {
+      const subjectId = (subject as any).uuid || subject.id; 
       const res = await fetch(`/api/professor/subject/${subject.id}/ponderaciones`, {
         method: 'POST',
         headers: authedHeaders(),
@@ -1167,6 +1218,99 @@ function EvaluationTab({ subject }: { subject: Subject }) {
     }
   };
 
+  const startEditPonderacion = (pond: Ponderacion) => {
+    setPondError('');
+    setIsAddingPond(false);
+    setEditingPondId(pond.id);
+    setEditPond({ nombre: pond.nombre, porcentaje: String(pond.porcentaje) });
+  };
+
+  const cancelEditPonderacion = () => {
+    setEditingPondId(null);
+    setEditPond({ nombre: '', porcentaje: '' });
+    setPondError('');
+  };
+
+  const handleUpdatePonderacion = async (pondId: number) => {
+    const pct = Number(editPond.porcentaje);
+    const totalSinActual = ponderaciones.reduce((a, c) => (c.id === pondId ? a : a + c.porcentaje), 0);
+
+    if (!editPond.nombre.trim()) { setPondError('El nombre es requerido.'); return; }
+    if (!pct || pct <= 0 || pct > 100) { setPondError('El porcentaje debe ser entre 1 y 100.'); return; }
+    if (totalSinActual + pct > 100) { setPondError(`No puedes superar 100%. Disponible: ${100 - totalSinActual}%.`); return; }
+
+    setPondError('');
+    setPondLoading(true);
+
+    try {
+      const res = await fetch(`/api/professor/subject/${subject.id}/ponderaciones/${pondId}`, {
+        method: 'PATCH',
+        headers: authedHeaders(),
+        body: JSON.stringify({ nombre: editPond.nombre.trim(), porcentaje: pct }),
+      });
+      const raw = await res.text();
+      const data = raw ? (() => {
+        try {
+          return JSON.parse(raw);
+        } catch {
+          return {};
+        }
+      })() : {};
+      if (!res.ok || !data.success) {
+        setPondError(data?.message || `No se pudo actualizar la ponderación. Código: ${res.status}.`);
+        return;
+      }
+
+      await fetchPonderaciones();
+      cancelEditPonderacion();
+      if (activeEvalTab === 'concentrado') fetchConcentrado();
+    } catch (err) {
+      console.error('[EvaluationTab] handleUpdatePonderacion:', err);
+      setPondError('Error de conexión al actualizar la ponderación.');
+    } finally {
+      setPondLoading(false);
+    }
+  };
+
+  const handleDeletePonderacion = async (pond: Ponderacion) => {
+    const confirmed = window.confirm(
+      `¿Eliminar la ponderación "${pond.nombre}"? También se borrarán las calificaciones asociadas.`
+    );
+    if (!confirmed) return;
+
+    setPondError('');
+    setDeletingPondId(pond.id);
+
+    try {
+      const res = await fetch(`/api/professor/subject/${subject.id}/ponderaciones/${pond.id}`, {
+        method: 'DELETE',
+        headers: authedHeaders(),
+      });
+      const raw = await res.text();
+      const data = raw ? (() => {
+        try {
+          return JSON.parse(raw);
+        } catch {
+          return {};
+        }
+      })() : {};
+
+      if (!res.ok || !data.success) {
+        setPondError(data?.message || `No se pudo eliminar la ponderación. Código: ${res.status}.`);
+        return;
+      }
+
+      await fetchPonderaciones();
+      if (editingPondId === pond.id) cancelEditPonderacion();
+      if (activeEvalTab === 'concentrado') fetchConcentrado();
+    } catch (err) {
+      console.error('[EvaluationTab] handleDeletePonderacion:', err);
+      setPondError('Error de conexión al eliminar la ponderación.');
+    } finally {
+      setDeletingPondId(null);
+    }
+  };
+
   return (
     <>
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -1185,14 +1329,68 @@ function EvaluationTab({ subject }: { subject: Subject }) {
             ) : (
               ponderaciones.map((pond) => (
                 <div key={pond.id} className="flex justify-between items-center bg-slate-50 p-4 rounded-xl border border-slate-100 hover:border-blue-200 transition-colors group">
-                  <span className="text-sm font-semibold text-slate-700">{pond.nombre}</span>
-                  <div className="flex items-center gap-2">
-                    <span className="text-sm font-bold text-blue-600 bg-blue-100 px-3 py-1 rounded-lg">{pond.porcentaje}%</span>
-                  </div>
+                  {editingPondId === pond.id ? (
+                    <div className="w-full space-y-3">
+                      <input
+                        type="text"
+                        value={editPond.nombre}
+                        onChange={(e) => setEditPond({ ...editPond, nombre: e.target.value })}
+                        className="w-full text-sm px-3 py-2 rounded-lg border border-blue-200 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      />
+                      <div className="flex gap-2">
+                        <input
+                          type="number"
+                          min={1}
+                          max={100}
+                          value={editPond.porcentaje}
+                          onChange={(e) => setEditPond({ ...editPond, porcentaje: e.target.value })}
+                          className="w-24 text-sm px-3 py-2 rounded-lg border border-blue-200 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        />
+                        <button
+                          onClick={() => handleUpdatePonderacion(pond.id)}
+                          disabled={pondLoading || !editPond.nombre || !editPond.porcentaje}
+                          title="Guardar cambios"
+                          className="h-10 w-10 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white rounded-lg flex items-center justify-center transition-colors"
+                        >
+                          {pondLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
+                        </button>
+                        <button
+                          onClick={cancelEditPonderacion}
+                          title="Cancelar edición"
+                          className="h-10 w-10 bg-white border border-slate-200 text-slate-500 hover:text-slate-700 rounded-lg flex items-center justify-center transition-colors"
+                        >
+                          <X className="w-4 h-4" />
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <>
+                      <span className="text-sm font-semibold text-slate-700">{pond.nombre}</span>
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm font-bold text-blue-600 bg-blue-100 px-3 py-1 rounded-lg">{pond.porcentaje}%</span>
+                        <button
+                          onClick={() => startEditPonderacion(pond)}
+                          title="Editar ponderación"
+                          className="h-8 w-8 opacity-0 group-hover:opacity-100 bg-white border border-slate-200 text-slate-500 hover:text-blue-600 hover:border-blue-200 rounded-lg flex items-center justify-center transition-all"
+                        >
+                          <Pencil className="w-4 h-4" />
+                        </button>
+                        <button
+                          onClick={() => handleDeletePonderacion(pond)}
+                          disabled={deletingPondId === pond.id}
+                          title="Eliminar ponderación"
+                          className="h-8 w-8 opacity-0 group-hover:opacity-100 bg-white border border-slate-200 text-slate-500 hover:text-red-600 hover:border-red-200 disabled:opacity-50 rounded-lg flex items-center justify-center transition-all"
+                        >
+                          {deletingPondId === pond.id ? <Loader2 className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4" />}
+                        </button>
+                      </div>
+                    </>
+                  )}
                 </div>
               ))
             )}
           </div>
+          {pondError && !isAddingPond && <p className="mb-4 text-xs text-red-600 font-medium">{pondError}</p>}
 
           <div className="pt-4 border-t border-slate-100 flex justify-between items-center mb-6">
             <span className="text-base font-bold text-slate-600">Total Evaluado:</span>

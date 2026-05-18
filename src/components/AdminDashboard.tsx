@@ -283,7 +283,7 @@ export default function AdminDashboard() {
                 value={manualSubject.professorName}
                 onChange={(e) => setManualSubject({ ...manualSubject, professorName: e.target.value })}
                 className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                placeholder="Ej. Horacio (Búsqueda inteligente)"
+                placeholder="(Búsqueda inteligente)"
               />
               <p className="text-xs text-slate-500 mt-1">El sistema buscará coincidencias. Si no existe, lo dejará en espera.</p>
             </div>
