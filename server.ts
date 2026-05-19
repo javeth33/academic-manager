@@ -804,7 +804,14 @@ async function startServer() {
     try {
       const subjectId = Number(req.params.id);
       const { rows } = req.body as {
-        rows: Array<{ matricula: string; calificaciones: Record<string, number | string> }>;
+        rows: Array<{
+          matricula?: string;
+          correo?: string;
+          nombre?: string;
+          calificaciones: Record<string, number | string>;
+        }>;
+        ponderaciones?: Array<{ nombre: string; porcentaje: number }>;
+        syncPonderaciones?: boolean;
       };
  
       console.log("[calificaciones-import] Iniciando importación");
@@ -819,22 +826,6 @@ async function startServer() {
         return res.status(400).json({ success: false, message: "No se recibieron filas para importar." });
       }
  
-      // ✅ PASO 1: Obtener ponderaciones de la materia
-      const { data: ponds, error: pondErr } = await supabase
-        .from("ponderaciones")
-        .select("id, nombre, porcentaje")
-        .eq("materia_id", subjectId);
- 
-      if (pondErr) {
-        console.error("[calificaciones-import] Error al obtener ponderaciones:", pondErr);
-        return res.status(500).json({ success: false, message: pondErr.message });
-      }
- 
-      console.log("  - Ponderaciones encontradas:", ponds?.length ?? 0);
-      if (ponds?.length) {
-        ponds.forEach((p: any) => console.log(`    - ${p.nombre} (ID: ${p.id})`));
-      }
- 
       // ✅ Función de normalización (IGUAL que en frontend)
       const normalize = (s: string) =>
         String(s ?? "")
@@ -843,6 +834,88 @@ async function startServer() {
           .replace(/[\u0300-\u036f]/g, "")
           .replace(/\s+/g, " ")
           .trim();
+
+      const normalizeImportPonderaciones = (items: Array<{ nombre: string; porcentaje: number }> = []) => {
+        const dedup = new Map<string, { nombre: string; porcentaje: number }>();
+        for (const item of items) {
+          const nombre = String(item.nombre ?? "").trim();
+          const porcentaje = Number(item.porcentaje);
+          if (!nombre || !Number.isFinite(porcentaje) || porcentaje <= 0) continue;
+          dedup.set(normalize(nombre), { nombre, porcentaje });
+        }
+        const out = Array.from(dedup.values());
+        const total = out.reduce((sum, item) => sum + item.porcentaje, 0);
+        if (out.length > 0 && total > 0) {
+          let running = 0;
+          out.forEach((item, idx) => {
+            item.porcentaje = idx === out.length - 1
+              ? Number((100 - running).toFixed(2))
+              : Number(((item.porcentaje / total) * 100).toFixed(2));
+            running += item.porcentaje;
+          });
+        }
+        return out;
+      };
+
+      let { data: ponds, error: pondErr } = await supabase
+        .from("ponderaciones")
+        .select("id, nombre, porcentaje")
+        .eq("materia_id", subjectId);
+ 
+      if (pondErr) {
+        console.error("[calificaciones-import] Error al obtener ponderaciones:", pondErr);
+        return res.status(500).json({ success: false, message: pondErr.message });
+      }
+
+      const importPonderaciones = normalizeImportPonderaciones(req.body?.ponderaciones);
+      if (req.body?.syncPonderaciones === true && importPonderaciones.length > 0) {
+        const existingPondIds = (ponds ?? []).map((p: any) => Number(p.id)).filter(Boolean);
+
+        if (existingPondIds.length > 0) {
+          const { error: deleteCalifsErr } = await supabase
+            .from("calificaciones")
+            .delete()
+            .in("ponderacion_id", existingPondIds);
+
+          if (deleteCalifsErr) {
+            console.error("[calificaciones-import] Error al borrar calificaciones previas:", deleteCalifsErr);
+            return res.status(500).json({ success: false, message: deleteCalifsErr.message });
+          }
+
+          const { error: deletePondsErr } = await supabase
+            .from("ponderaciones")
+            .delete()
+            .eq("materia_id", subjectId)
+            .in("id", existingPondIds);
+
+          if (deletePondsErr) {
+            console.error("[calificaciones-import] Error al reemplazar ponderaciones:", deletePondsErr);
+            return res.status(500).json({ success: false, message: deletePondsErr.message });
+          }
+        }
+
+        const { data: insertedPonds, error: insertPondsErr } = await supabase
+          .from("ponderaciones")
+          .insert(importPonderaciones.map((p) => ({
+            materia_id: subjectId,
+            nombre: p.nombre,
+            porcentaje: p.porcentaje,
+          })))
+          .select("id, nombre, porcentaje");
+
+        if (insertPondsErr) {
+          console.error("[calificaciones-import] Error al crear ponderaciones desde Excel:", insertPondsErr);
+          return res.status(500).json({ success: false, message: insertPondsErr.message });
+        }
+
+        ponds = insertedPonds ?? [];
+        console.log("  - Ponderaciones sincronizadas desde Excel:", ponds.length);
+      }
+ 
+      console.log("  - Ponderaciones encontradas:", ponds?.length ?? 0);
+      if (ponds?.length) {
+        ponds.forEach((p: any) => console.log(`    - ${p.nombre} (ID: ${p.id})`));
+      }
  
       // ✅ PASO 2: Crear mapa de ponderaciones POR NOMBRE NORMALIZADO
       const pondMap = new Map<string, number>();
@@ -853,39 +926,56 @@ async function startServer() {
       });
  
       const upserts: any[] = [];
-      const errors: Array<{ matricula: string; reason: string }> = [];
+      const errors: Array<{ alumno: string; reason: string }> = [];
       let processedRows = 0;
       let failedRows = 0;
  
       // ✅ PASO 3: Procesar cada fila
       for (const r of rows) {
         const matricula = String(r.matricula ?? "").trim();
+        const correo = String(r.correo ?? "").trim().toLowerCase();
+        const identifier = matricula || correo || String(r.nombre ?? "").trim() || "sin identificador";
  
-        if (!matricula) {
-          console.log("[calificaciones-import] Fila sin matrícula, saltando");
+        if (!matricula && !correo) {
+          console.log("[calificaciones-import] Fila sin matrícula/correo, saltando");
+          errors.push({ alumno: identifier, reason: "La fila no tiene matrícula ni correo para buscar al alumno" });
           failedRows++;
           continue;
         }
  
-        console.log(`\n  Procesando matrícula: ${matricula}`);
+        console.log(`\n  Procesando alumno: ${identifier}`);
  
-        // ✅ PASO 3.1: Buscar alumno por matrícula
-        const { data: alumno, error: alumnoErr } = await supabase
+        // ✅ PASO 3.1: Buscar alumno por matrícula o correo
+        let alumnoQuery = supabase
           .from("usuarios")
-          .select("id, matricula, nombre")
-          .eq("matricula", matricula)
-          .maybeSingle();
+          .select("id, matricula, nombre, correo");
+
+        alumnoQuery = matricula
+          ? alumnoQuery.eq("matricula", matricula)
+          : alumnoQuery.eq("correo", correo);
+
+        let { data: alumno, error: alumnoErr } = await alumnoQuery.maybeSingle();
+
+        if (!alumno && matricula && correo && !alumnoErr) {
+          const fallback = await supabase
+            .from("usuarios")
+            .select("id, matricula, nombre, correo")
+            .eq("correo", correo)
+            .maybeSingle();
+          alumno = fallback.data;
+          alumnoErr = fallback.error;
+        }
  
         if (alumnoErr) {
           console.error(`  ❌ Error buscando alumno: ${alumnoErr.message}`);
-          errors.push({ matricula, reason: alumnoErr.message });
+          errors.push({ alumno: identifier, reason: alumnoErr.message });
           failedRows++;
           continue;
         }
  
         if (!alumno) {
-          console.log(`  ❌ Alumno con matrícula ${matricula} no encontrado`);
-          errors.push({ matricula, reason: "Matrícula no encontrada en el sistema" });
+          console.log(`  ❌ Alumno ${identifier} no encontrado`);
+          errors.push({ alumno: identifier, reason: "Alumno no encontrado por matrícula/correo en el sistema" });
           failedRows++;
           continue;
         }
@@ -904,14 +994,14 @@ async function startServer() {
  
         if (inscErr) {
           console.error(`  ❌ Error verificando inscripción: ${inscErr.message}`);
-          errors.push({ matricula, reason: inscErr.message });
+          errors.push({ alumno: identifier, reason: inscErr.message });
           failedRows++;
           continue;
         }
  
         if (!insc) {
           console.log(`  ❌ Alumno no inscrito en materia ${subjectId}`);
-          errors.push({ matricula, reason: "El alumno no está inscrito en esta materia" });
+          errors.push({ alumno: identifier, reason: "El alumno no está inscrito en esta materia" });
           failedRows++;
           continue;
         }

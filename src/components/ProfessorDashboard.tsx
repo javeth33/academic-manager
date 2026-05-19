@@ -42,6 +42,18 @@ interface FeedbackMsg {
   type: 'success' | 'error' | '';
 }
 
+interface GradeImportRow {
+  matricula?: string;
+  correo?: string;
+  nombre?: string;
+  calificaciones: Record<string, number>;
+}
+
+interface GradeImportPonderacion {
+  nombre: string;
+  porcentaje: number;
+}
+
 interface ConfirmModal {
   open: boolean;
   title: string;
@@ -931,7 +943,9 @@ function EvaluationTab({ subject }: { subject: Subject }) {
 
   const [activeEvalTab, setActiveEvalTab] = useState<'import' | 'concentrado'>('import');
   const [gradesFile, setGradesFile] = useState<File | null>(null);
-  const [gradesPreview, setGradesPreview] = useState<Array<{ matricula: string; calificaciones: Record<string, number> }>>([]);
+  const [gradesPreview, setGradesPreview] = useState<GradeImportRow[]>([]);
+  const [gradesImportPonderaciones, setGradesImportPonderaciones] = useState<GradeImportPonderacion[]>([]);
+  const [gradesSyncPonderaciones, setGradesSyncPonderaciones] = useState(false);
   const [gradesMessage, setGradesMessage] = useState<FeedbackMsg>({ text: '', type: '' });
   const [gradesLoading, setGradesLoading] = useState(false);
   const [concentrado, setConcentrado] = useState<any[]>([]);
@@ -957,183 +971,229 @@ function EvaluationTab({ subject }: { subject: Subject }) {
 
   useEffect(() => { fetchPonderaciones(); }, [fetchPonderaciones]);
 
-  // ─── FUNCIÓN REPARADA: handleGradesPreview ────────────────────────────────
-  
-  //  FUNCIÓN REPARADA: handleGradesPreview
-// Detecta correctamente archivos Excel con estructura de PESOS en una fila y ACTIVIDADES en otra
+  const normalizeHeader = (value: unknown) =>
+    String(value ?? '')
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/\s+/g, ' ')
+      .trim();
 
-const handleGradesPreview = async () => {
-  if (!gradesFile) return;
-  setGradesMessage({ text: '', type: '' });
+  const toNumberCell = (value: unknown) => {
+    if (typeof value === 'number') return value;
+    const raw = String(value ?? '').trim().replace('%', '').replace(',', '.');
+    if (!raw) return null;
+    const num = Number(raw);
+    return Number.isFinite(num) ? num : null;
+  };
 
-  try {
-    const buf = await gradesFile.arrayBuffer();
-    const workbook = XLSX.read(buf, { type: 'array' });
-    const worksheet = workbook.Sheets[workbook.SheetNames[0]];
-
-    // Leer con defval vacío para no perder celdas
-    const jsonData = XLSX.utils.sheet_to_json<any[]>(worksheet, {
-      header: 1,
-      defval: '',
-      blankrows: false,
-    });
-
-    if (!Array.isArray(jsonData) || jsonData.length < 2) {
-      setGradesMessage({ text: 'El archivo no tiene filas suficientes.', type: 'error' });
-      return;
+  const scoreFromLongExport = (pointsRaw: unknown, maxRaw: unknown, percentRaw: unknown) => {
+    const points = toNumberCell(pointsRaw);
+    const max = toNumberCell(maxRaw);
+    if (points !== null && max !== null && max > 0) {
+      return Number(Math.max(0, Math.min(10, (points / max) * 10)).toFixed(2));
     }
 
-    // ─── PASO 1: Detectar fila de PESOS ────────────────────────
-    // Buscar fila donde hay números decimales (0.1, 0.2, 0.3) que corresponden a ponderaciones
+    const percent = toNumberCell(percentRaw);
+    if (percent === null) return null;
+    const score = percent <= 1 ? percent * 10 : percent / 10;
+    return Number(Math.max(0, Math.min(10, score)).toFixed(2));
+  };
+
+  const parseLongAssignmentExport = (jsonData: any[][]) => {
+    let headerRowIdx = -1;
+    let headerCells: string[] = [];
+
+    for (let i = 0; i < Math.min(jsonData.length, 20); i++) {
+      const normalized = (jsonData[i] as any[]).map(normalizeHeader);
+      const hasStudent = normalized.some((h) => h === 'direccion de correo' || h === 'correo' || h === 'email');
+      const hasTask = normalized.some((h) => h === 'tareas' || h === 'actividad' || h === 'actividad de clase');
+      const hasScore = normalized.some((h) => h === 'puntos' || h === 'porcentaje');
+      if (hasStudent && hasTask && hasScore) {
+        headerRowIdx = i;
+        headerCells = normalized;
+        break;
+      }
+    }
+
+    if (headerRowIdx < 0) return null;
+
+    const findIdx = (match: (h: string) => boolean) => headerCells.findIndex(match);
+    const idxEmail = findIdx((h) => h === 'direccion de correo' || h === 'correo' || h === 'email');
+    const idxName = findIdx((h) => h === 'nombre completo' || h === 'alumno' || h === 'nombre');
+    const idxTask = findIdx((h) => h === 'tareas' || h === 'actividad' || h === 'actividad de clase');
+    const idxPoints = findIdx((h) => h === 'puntos');
+    const idxMax = findIdx((h) => h === 'puntos maximos' || h === 'maximo' || h === 'puntaje maximo');
+    const idxPercent = findIdx((h) => h === 'porcentaje');
+
+    if (idxEmail < 0 || idxTask < 0 || (idxPoints < 0 && idxPercent < 0)) return null;
+
+    const grouped = new Map<string, GradeImportRow>();
+    const detectedActivities = new Set<string>();
+    const maxPointsByActivity = new Map<string, number>();
+
+    for (let r = headerRowIdx + 1; r < jsonData.length; r++) {
+      const row = jsonData[r] as any[];
+      const correo = String(row[idxEmail] ?? '').trim().toLowerCase();
+      const nombre = idxName >= 0 ? String(row[idxName] ?? '').trim() : '';
+      const actividad = String(row[idxTask] ?? '').trim();
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(correo) || !actividad) continue;
+
+      const score = scoreFromLongExport(
+        idxPoints >= 0 ? row[idxPoints] : '',
+        idxMax >= 0 ? row[idxMax] : '',
+        idxPercent >= 0 ? row[idxPercent] : ''
+      );
+      if (score === null) continue;
+
+      const maxPoints = idxMax >= 0 ? toNumberCell(row[idxMax]) : null;
+      maxPointsByActivity.set(
+        actividad,
+        Math.max(maxPointsByActivity.get(actividad) ?? 0, maxPoints && maxPoints > 0 ? maxPoints : 1)
+      );
+
+      const current = grouped.get(correo) ?? { correo, nombre, calificaciones: {} };
+      current.calificaciones[actividad] = score;
+      grouped.set(correo, current);
+      detectedActivities.add(actividad);
+    }
+
+    const activities = Array.from(detectedActivities);
+    const totalMaxPoints = activities.reduce((sum, activity) => sum + (maxPointsByActivity.get(activity) ?? 1), 0);
+    const importPonderaciones = activities.map((activity, idx) => {
+      const raw = totalMaxPoints > 0 ? ((maxPointsByActivity.get(activity) ?? 1) / totalMaxPoints) * 100 : 100 / activities.length;
+      const porcentaje = idx === activities.length - 1
+        ? Number((100 - activities.slice(0, -1).reduce((sum, prev) => {
+            const max = maxPointsByActivity.get(prev) ?? 1;
+            return sum + Number(((max / totalMaxPoints) * 100).toFixed(2));
+          }, 0)).toFixed(2))
+        : Number(raw.toFixed(2));
+      return { nombre: activity, porcentaje };
+    });
+
+    return {
+      rows: Array.from(grouped.values()).filter((r) => Object.keys(r.calificaciones).length > 0),
+      activities,
+      ponderaciones: importPonderaciones,
+      syncPonderaciones: true,
+      format: 'nuevo',
+    };
+  };
+
+  const parseWeightedMatrixExport = (jsonData: any[][]) => {
     let pesosRowIdx = -1;
     for (let i = 0; i < Math.min(jsonData.length, 15); i++) {
       const row = jsonData[i] as any[];
-      const pesos = row.filter(
-        (cell) => typeof cell === 'number' && cell > 0 && cell < 1
-      );
-      // Si encuentra 3+ números que podrían ser pesos (0.1-1.0), probablemente es la fila de pesos
+      const pesos = row.filter((cell) => typeof cell === 'number' && cell > 0 && cell < 1);
       if (pesos.length >= 3) {
         pesosRowIdx = i;
         break;
       }
     }
 
-    // ─── PASO 2: Detectar fila de ACTIVIDADES ────────────────────
-    // Está justo debajo de pesos o cerca del inicio
-    let actividadesRowIdx = pesosRowIdx >= 0 ? pesosRowIdx + 1 : 0;
+    const actividadesRowIdx = pesosRowIdx >= 0 ? pesosRowIdx + 1 : 0;
+    const actividadesRow = (jsonData[actividadesRowIdx] ?? []) as any[];
+    const textCells = actividadesRow.filter((cell) => typeof cell === 'string' && cell.trim().length > 2);
+    if (textCells.length < 3) return null;
 
-    // Validación: la fila de actividades debe tener nombres de texto
-    const actividadesRow = jsonData[actividadesRowIdx] as any[];
-    const textCells = actividadesRow.filter(
-      (cell) => typeof cell === 'string' && cell.trim().length > 2
-    );
-    if (textCells.length < 3) {
-      setGradesMessage({
-        text: 'No se detectó fila con nombres de actividades. Estructura esperada: Fila de pesos + Fila de actividades + Datos.',
-        type: 'error',
-      });
-      return;
-    }
-
-    // ─── PASO 3: Mapear columnas de PONDERACIONES ────────────────
     const pondMapping = new Map<number, { nombre: string; peso: number }>();
-
     if (pesosRowIdx >= 0) {
       const pesosRow = jsonData[pesosRowIdx] as any[];
-      const actRow = jsonData[actividadesRowIdx] as any[];
-
-      for (let col = 0; col < actRow.length; col++) {
+      for (let col = 0; col < actividadesRow.length; col++) {
         const peso = pesosRow[col];
-        const nombre = String(actRow[col] ?? '').trim();
-
+        const nombre = String(actividadesRow[col] ?? '').trim();
         if (typeof peso === 'number' && peso > 0 && peso < 1 && nombre) {
           pondMapping.set(col, { nombre, peso });
         }
       }
     }
 
-    if (pondMapping.size === 0) {
-      setGradesMessage({
-        text: 'No se detectaron columnas de ponderación. Verifica que haya pesos (0.1, 0.2, etc.) en la estructura del archivo.',
-        type: 'error',
-      });
-      return;
-    }
+    if (pondMapping.size === 0) return null;
 
-    // ─── PASO 4: Detectar columnas de MATRÍCULA y NOMBRE ──────────
-    const dataStartRow = actividadesRowIdx + 1; // Datos de alumnos comienzan aquí
-    const firstDataRow = jsonData[dataStartRow] as any[];
-
+    const dataStartRow = actividadesRowIdx + 1;
     let idxMatricula = -1;
-    let idxNombre = -1;
-
-    // Buscar por posición típica (columna 2-3 suelen ser nombre/ID en BUAP)
-    const potentialNameCols = [1, 2]; // Columnas más comunes para nombres
-    const potentialIdCols = [2, 3];   // Columnas más comunes para ID
-
-    // Estrategia 1: Buscar por contenido numérico en filas de datos
     for (let col = 0; col < 5; col++) {
       let numericCount = 0;
       for (let row = dataStartRow; row < Math.min(jsonData.length, dataStartRow + 5); row++) {
         const val = String((jsonData[row] as any[])[col] ?? '').trim();
-        // Matrícula: 6+ dígitos
         if (/^\d{6,}$/.test(val)) numericCount++;
       }
-      if (numericCount >= 1 && idxMatricula < 0) idxMatricula = col;
-    }
-
-    // Estrategia 2: Nombre está típicamente en columna 1 o 2
-    if (idxNombre < 0) {
-      for (const col of potentialNameCols) {
-        const val = String((jsonData[dataStartRow] as any[])[col] ?? '').trim();
-        if (val && val.length > 3 && !/^\d+$/.test(val)) {
-          idxNombre = col;
-          break;
-        }
+      if (numericCount >= 1) {
+        idxMatricula = col;
+        break;
       }
     }
 
-    if (idxMatricula < 0 || idxNombre < 0) {
-      setGradesMessage({
-        text: 'No se encontraron columnas de Matrícula o Nombre. Estructura esperada: [Nombre | Matrícula | Actividades...]',
-        type: 'error',
-      });
-      return;
-    }
+    if (idxMatricula < 0) return null;
 
-    // ─── PASO 5: Extraer datos de ALUMNOS ──────────────────────────
-    const preview: Array<{ matricula: string; calificaciones: Record<string, number> }> = [];
-
+    const rows: GradeImportRow[] = [];
     for (let r = dataStartRow; r < jsonData.length; r++) {
       const row = jsonData[r] as any[];
-      const matriculaRaw = String(row[idxMatricula] ?? '').trim().replace(/\D/g, '');
-
-      if (!matriculaRaw || matriculaRaw.length < 5) continue;
+      const matricula = String(row[idxMatricula] ?? '').trim().replace(/\D/g, '');
+      if (!matricula || matricula.length < 5) continue;
 
       const calificaciones: Record<string, number> = {};
-
-      // Iterar sobre columnas mapeadas de ponderaciones
       for (const [col, { nombre }] of pondMapping) {
-        const val = row[col];
-        const num = Number(val);
-        if (!Number.isNaN(num) && num >= 0) {
-          calificaciones[nombre] = num;
-        }
+        const num = toNumberCell(row[col]);
+        if (num !== null && num >= 0) calificaciones[nombre] = num;
       }
 
-      // Solo agregar si tiene al menos una calificación
-      if (Object.keys(calificaciones).length > 0) {
-        preview.push({
-          matricula: matriculaRaw,
-          calificaciones,
-        });
-      }
+      if (Object.keys(calificaciones).length > 0) rows.push({ matricula, calificaciones });
     }
 
-    if (preview.length === 0) {
+    return {
+      rows,
+      activities: Array.from(pondMapping.values()).map((p) => p.nombre),
+      ponderaciones: Array.from(pondMapping.values()).map((p) => ({ nombre: p.nombre, porcentaje: Number((p.peso * 100).toFixed(2)) })),
+      syncPonderaciones: false,
+      format: 'anterior',
+    };
+  };
+
+  const handleGradesPreview = async () => {
+    if (!gradesFile) return;
+    setGradesMessage({ text: '', type: '' });
+
+    try {
+      const buf = await gradesFile.arrayBuffer();
+      const workbook = XLSX.read(buf, { type: 'array' });
+      const worksheet = workbook.Sheets[workbook.SheetNames[0]];
+      const jsonData = XLSX.utils.sheet_to_json<any[]>(worksheet, {
+        header: 1,
+        defval: '',
+        blankrows: false,
+      });
+
+      if (!Array.isArray(jsonData) || jsonData.length < 2) {
+        setGradesMessage({ text: 'El archivo no tiene filas suficientes.', type: 'error' });
+        return;
+      }
+
+      const parsed = parseLongAssignmentExport(jsonData) ?? parseWeightedMatrixExport(jsonData);
+
+      if (!parsed || parsed.rows.length === 0) {
+        setGradesMessage({
+          text: 'No se detectaron filas válidas. Se acepta el Excel nuevo de Datos de asignación o el formato anterior con matrícula y actividades.',
+          type: 'error',
+        });
+        return;
+      }
+
+      setGradesPreview(parsed.rows.slice(0, 200));
+      setGradesImportPonderaciones(parsed.ponderaciones);
+      setGradesSyncPonderaciones(parsed.syncPonderaciones);
       setGradesMessage({
-        text: 'No se detectaron filas válidas de alumnos con calificaciones.',
+        text: `Detectadas ${parsed.rows.length} filas (${parsed.format}). Actividades: ${parsed.activities.join(', ')}`,
+        type: 'success',
+      });
+    } catch (error) {
+      console.error('Error en handleGradesPreview:', error);
+      setGradesMessage({
+        text: 'No se pudo leer el archivo. Usa .xlsx exportado desde Excel.',
         type: 'error',
       });
-      return;
     }
-
-    setGradesPreview(preview.slice(0, 200));
-    const pondNames = Array.from(pondMapping.values())
-      .map((p) => p.nombre)
-      .join(', ');
-    setGradesMessage({
-      text: `Detectadas ${preview.length} filas. Ponderaciones: ${pondNames}`,
-      type: 'success',
-    });
-  } catch (error) {
-    console.error('Error en handleGradesPreview:', error);
-    setGradesMessage({
-      text: 'No se pudo leer el archivo. Usa .xlsx exportado desde Excel.',
-      type: 'error',
-    });
-  }
-};
+  };
 
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -1147,7 +1207,11 @@ const handleGradesPreview = async () => {
       const res = await fetch(`/api/professor/subject/${subject.id}/calificaciones/import`, {
         method: 'POST',
         headers: authedHeaders(),
-        body: JSON.stringify({ rows: gradesPreview }),
+        body: JSON.stringify({
+          rows: gradesPreview,
+          ponderaciones: gradesImportPonderaciones,
+          syncPonderaciones: gradesSyncPonderaciones,
+        }),
       });
       const data = await res.json();
       if (!res.ok || !data.success) {
@@ -1157,6 +1221,9 @@ const handleGradesPreview = async () => {
       setGradesMessage({ text: `Importación OK. Registros: ${data.imported}.`, type: 'success' });
       setGradesFile(null);
       setGradesPreview([]);
+      setGradesImportPonderaciones([]);
+      setGradesSyncPonderaciones(false);
+      fetchPonderaciones();
     } catch {
       setGradesMessage({ text: 'Error de conexión al importar calificaciones.', type: 'error' });
     } finally {
@@ -1465,13 +1532,19 @@ const handleGradesPreview = async () => {
           {activeEvalTab === 'import' ? (
             <div className="space-y-4">
               <p className="text-sm text-slate-500">
-                Sube un archivo donde las columnas de actividades coincidan por nombre con tus ponderaciones. Debe incluir una columna de matrícula.
+                Sube el Excel de Datos de asignación o el formato anterior. Las actividades deben coincidir por nombre con tus ponderaciones.
               </p>
               <div className="border-2 border-dashed border-blue-200 rounded-2xl p-6 bg-blue-50/50">
                 <input
-                  type="file"
-                  accept=".csv,.xlsx"
-                  onChange={(e) => { setGradesFile(e.target.files?.[0] || null); setGradesPreview([]); setGradesMessage({ text: '', type: '' }); }}
+	                  type="file"
+	                  accept=".csv,.xlsx"
+	                  onChange={(e) => {
+	                    setGradesFile(e.target.files?.[0] || null);
+	                    setGradesPreview([]);
+	                    setGradesImportPonderaciones([]);
+	                    setGradesSyncPonderaciones(false);
+	                    setGradesMessage({ text: '', type: '' });
+	                  }}
                   className="block w-full text-sm text-slate-500 file:mr-4 file:py-2.5 file:px-6 file:rounded-xl file:border-0 file:text-sm file:font-bold file:bg-blue-100 file:text-blue-700 hover:file:bg-blue-200 transition-colors cursor-pointer"
                 />
               </div>
@@ -1507,7 +1580,7 @@ const handleGradesPreview = async () => {
                   <div className="p-4 space-y-2">
                     {gradesPreview.slice(0, 10).map((r, idx) => (
                       <div key={idx} className="text-sm">
-                        <span className="font-mono text-slate-600">{r.matricula}</span>
+                        <span className="font-mono text-slate-600">{r.matricula || r.correo || r.nombre}</span>
                         <span className="text-slate-400"> — </span>
                         <span className="text-slate-700">
                           {Object.entries(r.calificaciones).slice(0, 4).map(([k, v]) => `${k}: ${v}`).join(', ')}
