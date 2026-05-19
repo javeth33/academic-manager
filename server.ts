@@ -794,224 +794,134 @@ async function startServer() {
     }
   });
 
-  // Importar calificaciones por matrícula (para módulo de evaluación)
-  
+// Importar calificaciones por actividad (Excel de Teams)
+// Importar calificaciones por actividad (Excel de Teams) con Validación Estricta
   app.post(
-  "/api/professor/subject/:id/calificaciones/import",
-  authMiddleware,
-  requireRole("professor", "admin"),
-  async (req, res) => {
-    try {
-      const subjectId = Number(req.params.id);
-      const { rows } = req.body as {
-        rows: Array<{ matricula: string; calificaciones: Record<string, number | string> }>;
-      };
- 
-      console.log("[calificaciones-import] Iniciando importación");
-      console.log("  - subjectId:", subjectId);
-      console.log("  - rows recibidas:", rows.length);
-      if (rows.length > 0) {
-        console.log("  - Primer row:", JSON.stringify(rows[0], null, 2));
-      }
- 
-      if (!subjectId || !Array.isArray(rows) || rows.length === 0) {
-        console.error("[calificaciones-import] Parámetros inválidos");
-        return res.status(400).json({ success: false, message: "No se recibieron filas para importar." });
-      }
- 
-      // ✅ PASO 1: Obtener ponderaciones de la materia
-      const { data: ponds, error: pondErr } = await supabase
-        .from("ponderaciones")
-        .select("id, nombre, porcentaje")
-        .eq("materia_id", subjectId);
- 
-      if (pondErr) {
-        console.error("[calificaciones-import] Error al obtener ponderaciones:", pondErr);
-        return res.status(500).json({ success: false, message: pondErr.message });
-      }
- 
-      console.log("  - Ponderaciones encontradas:", ponds?.length ?? 0);
-      if (ponds?.length) {
-        ponds.forEach((p: any) => console.log(`    - ${p.nombre} (ID: ${p.id})`));
-      }
- 
-      // ✅ Función de normalización (IGUAL que en frontend)
-      const normalize = (s: string) =>
-        String(s ?? "")
-          .toLowerCase()
-          .normalize("NFD")
-          .replace(/[\u0300-\u036f]/g, "")
-          .replace(/\s+/g, " ")
-          .trim();
- 
-      // ✅ PASO 2: Crear mapa de ponderaciones POR NOMBRE NORMALIZADO
-      const pondMap = new Map<string, number>();
-      (ponds ?? []).forEach((p: any) => {
-        const nombreNorm = normalize(p.nombre);
-        pondMap.set(nombreNorm, Number(p.id));
-        console.log(`  - Mapeado: "${p.nombre}" → normalizado: "${nombreNorm}" → ID: ${p.id}`);
-      });
- 
-      const upserts: any[] = [];
-      const errors: Array<{ matricula: string; reason: string }> = [];
-      let processedRows = 0;
-      let failedRows = 0;
- 
-      // ✅ PASO 3: Procesar cada fila
-      for (const r of rows) {
-        const matricula = String(r.matricula ?? "").trim();
- 
-        if (!matricula) {
-          console.log("[calificaciones-import] Fila sin matrícula, saltando");
-          failedRows++;
-          continue;
+    "/api/professor/subject/:id/calificaciones/import",
+    authMiddleware,
+    requireRole("professor", "admin"),
+    async (req, res) => {
+      try {
+        const subjectId = Number(req.params.id);
+        const { ponderacionId, actividadNombre, fechaVencimiento, calificaciones } = req.body;
+
+        if (!subjectId || !ponderacionId || !actividadNombre || !calificaciones || calificaciones.length === 0) {
+          return res.status(400).json({ success: false, message: "Faltan datos de la ponderación o calificaciones." });
         }
- 
-        console.log(`\n  Procesando matrícula: ${matricula}`);
- 
-        // ✅ PASO 3.1: Buscar alumno por matrícula
-        const { data: alumno, error: alumnoErr } = await supabase
-          .from("usuarios")
-          .select("id, matricula, nombre")
-          .eq("matricula", matricula)
-          .maybeSingle();
- 
-        if (alumnoErr) {
-          console.error(`  ❌ Error buscando alumno: ${alumnoErr.message}`);
-          errors.push({ matricula, reason: alumnoErr.message });
-          failedRows++;
-          continue;
-        }
- 
-        if (!alumno) {
-          console.log(`  ❌ Alumno con matrícula ${matricula} no encontrado`);
-          errors.push({ matricula, reason: "Matrícula no encontrada en el sistema" });
-          failedRows++;
-          continue;
-        }
- 
-        console.log(`  ✅ Alumno encontrado: ${alumno.nombre} (ID: ${alumno.id})`);
- 
-        // ✅ PASO 3.2: Validar inscripción
-        const { data: insc, error: inscErr } = await supabase
-          .from("inscripciones")
-          .select("id, estatus")
+
+        // VALIDACIÓN 1: Seguridad de la Ponderación
+        // Verificamos que la ponderación que eligió el profe realmente pertenece a esta materia
+        const { data: pondCheck } = await supabase
+          .from("ponderaciones")
+          .select("id")
+          .eq("id", ponderacionId)
           .eq("materia_id", subjectId)
-          .eq("alumno_id", alumno.id)
-          .eq("estatus", "activo")
-          .limit(1)
           .maybeSingle();
- 
-        if (inscErr) {
-          console.error(`  ❌ Error verificando inscripción: ${inscErr.message}`);
-          errors.push({ matricula, reason: inscErr.message });
-          failedRows++;
-          continue;
+
+        if (!pondCheck) {
+          return res.status(403).json({ success: false, message: "Operación rechazada: La ponderación no pertenece a esta clase." });
         }
- 
-        if (!insc) {
-          console.log(`  ❌ Alumno no inscrito en materia ${subjectId}`);
-          errors.push({ matricula, reason: "El alumno no está inscrito en esta materia" });
-          failedRows++;
-          continue;
-        }
- 
-        console.log(`  ✅ Inscripción válida (estado: ${insc.estatus})`);
- 
-        // ✅ PASO 3.3: Procesar calificaciones
-        const califs = r.calificaciones ?? {};
-        console.log(`  Calificaciones recibidas:`, Object.keys(califs).length);
- 
-        let calificacionesAgregadas = 0;
- 
-        for (const [pondName, scoreRaw] of Object.entries(califs)) {
-          const pondNameNorm = normalize(pondName);  // ✅ Normalizar el nombre recibido
-          const pondId = pondMap.get(pondNameNorm);
- 
-          console.log(`    - "${pondName}" → normalizado: "${pondNameNorm}"`);
- 
-          if (!pondId) {
-            console.log(`      ❌ No encontrada en mapa (disponibles: ${Array.from(pondMap.keys()).join(", ")})`);
-            continue;
+
+        // 1. Parsear la fecha de Teams (ej. "30/04/2026", "1/8/2026", "08/01/2026")
+        let parsedDate = null;
+        if (fechaVencimiento) {
+          // Extraemos el día, mes y año permitiendo 1 o 2 dígitos (\d{1,2})
+          const match = fechaVencimiento.match(/(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})/);
+          if (match) {
+            // padStart asegura que si el día es "1", lo convierta en "01" para SQL
+            const day = match[1].padStart(2, '0');
+            const month = match[2].padStart(2, '0');
+            const year = match[3];
+            
+            // PostgreSQL requiere formato YYYY-MM-DD
+            parsedDate = `${year}-${month}-${day}`;
           }
- 
-          const score = Number(scoreRaw);
-          if (Number.isNaN(score)) {
-            console.log(`      ❌ Puntaje inválido: ${scoreRaw}`);
-            continue;
+        }
+        // 2. Crear el registro de la Actividad
+        const { data: actividad, error: actErr } = await supabase
+          .from("actividades")
+          .insert([{
+            ponderacion_id: ponderacionId,
+            nombre: actividadNombre.trim(),
+            fecha_vencimiento: parsedDate
+          }])
+          .select()
+          .single();
+
+        if (actErr) return res.status(500).json({ success: false, message: "Error al crear la actividad: " + actErr.message });
+
+        // VALIDACIÓN 2: Filtrar solo alumnos inscritos en ESTA materia
+        // Buscamos directamente en inscripciones cruzando con usuarios
+        const { data: inscritos, error: insErr } = await supabase
+          .from("inscripciones")
+          .select(`alumno_id, usuarios!inner(correo)`)
+          .eq("materia_id", subjectId)
+          .eq("estatus", "activo")
+          .not("alumno_id", "is", null);
+
+        if (insErr) {
+          await supabase.from("actividades").delete().eq("id", actividad.id);
+          return res.status(500).json({ success: false, message: "Error al validar alumnos inscritos." });
+        }
+
+        // Creamos un diccionario (Map) rápido de los alumnos que sí están en la clase
+        const alumnoInscritoMap = new Map();
+        inscritos?.forEach((insc: any) => {
+          if (insc.usuarios && insc.usuarios.correo) {
+            alumnoInscritoMap.set(insc.usuarios.correo.toLowerCase(), insc.alumno_id);
           }
- 
-          console.log(`      ✅ Agregada: ponderación_id=${pondId}, puntaje=${score}`);
-          upserts.push({
-            ponderacion_id: pondId,
-            alumno_id: alumno.id,
-            puntaje: score,
-          });
- 
-          calificacionesAgregadas++;
-        }
- 
-        if (calificacionesAgregadas > 0) {
-          processedRows++;
-        } else {
-          console.log(`  ❌ No se agregaron calificaciones para esta matrícula`);
-          failedRows++;
-        }
-      }
- 
-      console.log(`\n[calificaciones-import] Resumen:`);
-      console.log(`  - Filas procesadas: ${processedRows}`);
-      console.log(`  - Filas fallidas: ${failedRows}`);
-      console.log(`  - Upserts a ejecutar: ${upserts.length}`);
-      console.log(`  - Errores: ${errors.length}`);
- 
-      if (upserts.length === 0) {
-        console.error("[calificaciones-import] ❌ Sin datos para importar");
-        return res.status(400).json({
-          success: false,
-          message: "No se generaron calificaciones válidas. Verifica que los nombres de actividades coincidan exactamente con tus ponderaciones.",
-          errors,
-          debug: {
-            pondNames: Array.from(pondMap.keys()),
-            receivedNames: rows.flatMap((r) => Object.keys(r.calificaciones ?? {})),
-          },
         });
-      }
- 
-      // ✅ PASO 4: Hacer el upsert
-      console.log("[calificaciones-import] Ejecutando upsert...");
-      const { error: upsertErr, count } = await supabase
-        .from("calificaciones")
-        .upsert(upserts, { onConflict: "ponderacion_id,alumno_id" });
- 
-      if (upsertErr) {
-        console.error("[calificaciones-import] Error en upsert:", upsertErr);
-        return res.status(500).json({
-          success: false,
-          message: upsertErr.message,
-          errors,
+
+        // 3. Preparar los registros de calificaciones (Filtrando intrusos)
+        const upserts: any[] = [];
+        let missingUsers = 0;
+
+        for (const c of calificaciones) {
+          const correoExcel = c.correo.toLowerCase();
+          const alumnoId = alumnoInscritoMap.get(correoExcel);
+
+          // Si el alumnoId existe, significa que SÍ es de la clase. Se agrega.
+          if (alumnoId) {
+            upserts.push({
+              actividad_id: actividad.id,
+              alumno_id: alumnoId,
+              puntaje: c.puntaje,
+            });
+          } else {
+            // Si no existe, es un intruso o no está inscrito, lo ignoramos y lo sumamos a los faltantes.
+            missingUsers++;
+          }
+        }
+
+        if (upserts.length === 0) {
+          // Si ningún alumno del Excel pertenece a la clase, borramos la actividad recién creada para no dejar basura
+          await supabase.from("actividades").delete().eq("id", actividad.id);
+          return res.status(400).json({ success: false, message: "Ningún alumno del archivo está inscrito en esta clase." });
+        }
+
+        // 4. Insertar calificaciones seguras
+        const { error: upsertErr } = await supabase
+          .from("calificaciones")
+          .insert(upserts);
+
+        if (upsertErr) {
+           await supabase.from("actividades").delete().eq("id", actividad.id); // Rollback si falla
+           return res.status(500).json({ success: false, message: upsertErr.message });
+        }
+
+        return res.json({
+          success: true,
+          imported: upserts.length,
+          missing: missingUsers, // Número de alumnos del excel ignorados por no pertenecer a la clase
+          actividad: actividadNombre
         });
+      } catch (e: any) {
+        return res.status(500).json({ success: false, message: `Error interno: ${e.message}` });
       }
- 
-      console.log(`[calificaciones-import] ✅ Upsert exitoso: ${count} registros`);
- 
-      return res.json({
-        success: true,
-        imported: upserts.length,
-        errors: errors.length > 0 ? errors : undefined,
-      });
-    } catch (e: any) {
-      console.error("[calificaciones-import] ERROR CRÍTICO:", e);
-      return res.status(500).json({
-        success: false,
-        message: `Error interno: ${e.message}`,
-        stack: process.env.NODE_ENV === "development" ? e.stack : undefined,
-      });
     }
-  }
-);
-  
-  // Concentrado de calificaciones por materia (promedio redondeado)
+  );
+
+  // Concentrado de calificaciones por materia (Cálculo actualizado)
   app.get(
     "/api/professor/subject/:id/concentrado",
     authMiddleware,
@@ -1021,18 +931,19 @@ async function startServer() {
         const subjectId = Number(req.params.id);
         if (!subjectId) return res.status(400).json({ success: false, message: "Materia inválida." });
 
+        // Obtener ponderaciones
         const { data: ponds, error: pondErr } = await supabase
           .from("ponderaciones")
           .select("id, porcentaje")
           .eq("materia_id", subjectId);
         if (pondErr) return res.status(500).json({ success: false, message: pondErr.message });
 
-        const pondIds = (ponds ?? []).map((p: any) => Number(p.id));
         const totalEval = (ponds ?? []).reduce((a: number, p: any) => a + Number(p.porcentaje ?? 0), 0);
-        const porcentajeByPonderacion = new Map<number, number>(
+        const ponderacionMap = new Map<number, number>(
           (ponds ?? []).map((p: any) => [Number(p.id), Number(p.porcentaje ?? 0)])
         );
 
+        // Alumnos inscritos activos
         const { data: inscritos, error: insErr } = await supabase
           .from("inscripciones")
           .select(`alumno_id, usuarios (id, nombre, matricula, correo)`)
@@ -1042,35 +953,56 @@ async function startServer() {
         if (insErr) return res.status(500).json({ success: false, message: insErr.message });
 
         const alumnoIds = (inscritos ?? []).map((i: any) => Number(i.alumno_id));
+
+        // Obtener calificaciones CON su respectiva ponderación a través de "actividades"
         const { data: califs, error: calErr } = await supabase
           .from("calificaciones")
-          .select("alumno_id, ponderacion_id, puntaje")
-          .in("alumno_id", alumnoIds)
-          .in("ponderacion_id", pondIds);
+          .select(`
+            alumno_id,
+            puntaje,
+            actividades!inner (
+              ponderacion_id
+            )
+          `)
+          .in("alumno_id", alumnoIds);
         if (calErr) return res.status(500).json({ success: false, message: calErr.message });
 
-        const byAlumno = new Map<number, any[]>();
+        // Agrupar calificaciones por alumno y luego por ponderación
+        const byAlumno = new Map<number, Record<number, number[]>>();
         (califs ?? []).forEach((c: any) => {
-          const id = Number(c.alumno_id);
-          const arr = byAlumno.get(id) ?? [];
-          arr.push(c);
-          byAlumno.set(id, arr);
+          const alumnoId = Number(c.alumno_id);
+          const pondId = Number(c.actividades.ponderacion_id);
+          
+          if (!byAlumno.has(alumnoId)) byAlumno.set(alumnoId, {});
+          const alumnoData = byAlumno.get(alumnoId)!;
+          
+          if (!alumnoData[pondId]) alumnoData[pondId] = [];
+          alumnoData[pondId].push(Number(c.puntaje));
         });
 
+        // Calcular promedio final sumando (promedio_actividades * porcentaje_ponderacion)
         const students = (inscritos ?? []).map((i: any) => {
           const u = i.usuarios;
-          const list = byAlumno.get(Number(i.alumno_id)) ?? [];
-          const promedio = list.reduce((a: number, c: any) => {
-            const porcentaje = porcentajeByPonderacion.get(Number(c.ponderacion_id)) ?? 0;
-            return a + Number(c.puntaje ?? 0) * (porcentaje / 100);
-          }, 0);
-          const rounded = Number(promedio.toFixed(2));
+          const alumnoGrades = byAlumno.get(Number(u.id)) ?? {};
+          
+          let calificacionFinal = 0;
+
+          for (const [pondIdStr, puntajes] of Object.entries(alumnoGrades)) {
+            const pondId = Number(pondIdStr);
+            const porcentaje = ponderacionMap.get(pondId) ?? 0;
+            
+            // Promedio de las tareas dentro de esta ponderación
+            const promedioTareas = puntajes.reduce((acc, p) => acc + p, 0) / puntajes.length;
+            
+            calificacionFinal += promedioTareas * (porcentaje / 100);
+          }
+
           return {
             id: u.id,
             nombre: u.nombre,
             matricula: u.matricula,
             correo: u.correo,
-            promedio: rounded,
+            promedio: Number(calificacionFinal.toFixed(2)),
           };
         });
 
@@ -1081,7 +1013,6 @@ async function startServer() {
       }
     }
   );
-
   // ── Asistencia QR ─────────────────────────────────────────────────────────────
 
   // Validar QR

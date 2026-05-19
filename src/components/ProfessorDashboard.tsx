@@ -916,7 +916,6 @@ function StudentsTab({ subject }: { subject: Subject }) {
 // ─── EvaluationTab ────────────────────────────────────────────────────────────
 
 // ─── EvaluationTab (REPARADO) ────────────────────────────────────────────────
-
 function EvaluationTab({ subject }: { subject: Subject }) {
   const [ponderaciones, setPonderaciones] = useState<Ponderacion[]>([]);
   const [isAddingPond, setIsAddingPond] = useState(false);
@@ -931,7 +930,12 @@ function EvaluationTab({ subject }: { subject: Subject }) {
 
   const [activeEvalTab, setActiveEvalTab] = useState<'import' | 'concentrado'>('import');
   const [gradesFile, setGradesFile] = useState<File | null>(null);
-  const [gradesPreview, setGradesPreview] = useState<Array<{ matricula: string; calificaciones: Record<string, number> }>>([]);
+  
+  // NUEVOS ESTADOS PARA CONTROLAR LA ASIGNACIÓN DIRECTA DE TEAMS
+  const [selectedPonderacionId, setSelectedPonderacionId] = useState<number | ''>('');
+  const [actividadMeta, setActividadMeta] = useState<{ nombre: string; fecha: string } | null>(null);
+  const [gradesPreview, setGradesPreview] = useState<Array<{ correo: string; nombre: string; puntaje: number }>>([]);
+  
   const [gradesMessage, setGradesMessage] = useState<FeedbackMsg>({ text: '', type: '' });
   const [gradesLoading, setGradesLoading] = useState(false);
   const [concentrado, setConcentrado] = useState<any[]>([]);
@@ -944,7 +948,6 @@ function EvaluationTab({ subject }: { subject: Subject }) {
 
   const fetchPonderaciones = useCallback(async () => {
     try {
-      const subjectId = (subject as any).uuid || subject.id;
       const res = await fetch(`/api/professor/subject/${subject.id}/ponderaciones`, {
         headers: { Authorization: `Bearer ${localStorage.getItem('token')}` },
       });
@@ -957,206 +960,132 @@ function EvaluationTab({ subject }: { subject: Subject }) {
 
   useEffect(() => { fetchPonderaciones(); }, [fetchPonderaciones]);
 
-  // ─── FUNCIÓN REPARADA: handleGradesPreview ────────────────────────────────
-  
-  //  FUNCIÓN REPARADA: handleGradesPreview
-// Detecta correctamente archivos Excel con estructura de PESOS en una fila y ACTIVIDADES en otra
-
+  // NUEVA LÓGICA DE DETECCIÓN Y AJUSTE DE COLUMNAS DE TEAMS
 const handleGradesPreview = async () => {
-  if (!gradesFile) return;
-  setGradesMessage({ text: '', type: '' });
+    if (!gradesFile) return;
+    setGradesMessage({ text: '', type: '' });
 
-  try {
-    const buf = await gradesFile.arrayBuffer();
-    const workbook = XLSX.read(buf, { type: 'array' });
-    const worksheet = workbook.Sheets[workbook.SheetNames[0]];
+    try {
+      const buf = await gradesFile.arrayBuffer();
+      const workbook = XLSX.read(buf, { type: 'array' });
+      const worksheet = workbook.Sheets[workbook.SheetNames[0]];
 
-    // Leer con defval vacío para no perder celdas
-    const jsonData = XLSX.utils.sheet_to_json<any[]>(worksheet, {
-      header: 1,
-      defval: '',
-      blankrows: false,
-    });
+      // Leer como matriz (array de arrays) para evitar el problema de títulos desfasados de Teams
+      const jsonData = XLSX.utils.sheet_to_json<any[]>(worksheet, { header: 1, defval: '' });
 
-    if (!Array.isArray(jsonData) || jsonData.length < 2) {
-      setGradesMessage({ text: 'El archivo no tiene filas suficientes.', type: 'error' });
-      return;
-    }
-
-    // ─── PASO 1: Detectar fila de PESOS ────────────────────────
-    // Buscar fila donde hay números decimales (0.1, 0.2, 0.3) que corresponden a ponderaciones
-    let pesosRowIdx = -1;
-    for (let i = 0; i < Math.min(jsonData.length, 15); i++) {
-      const row = jsonData[i] as any[];
-      const pesos = row.filter(
-        (cell) => typeof cell === 'number' && cell > 0 && cell < 1
-      );
-      // Si encuentra 3+ números que podrían ser pesos (0.1-1.0), probablemente es la fila de pesos
-      if (pesos.length >= 3) {
-        pesosRowIdx = i;
-        break;
+      if (!Array.isArray(jsonData) || jsonData.length === 0) {
+        setGradesMessage({ text: 'El archivo está vacío o no es válido.', type: 'error' });
+        return;
       }
-    }
 
-    // ─── PASO 2: Detectar fila de ACTIVIDADES ────────────────────
-    // Está justo debajo de pesos o cerca del inicio
-    let actividadesRowIdx = pesosRowIdx >= 0 ? pesosRowIdx + 1 : 0;
+      const normalize = (s: string) => String(s || '').toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim();
+      
+      // Buscar dinámicamente en las primeras 10 filas dónde están los verdaderos encabezados
+      let headerRowIndex = -1;
+      let colIndices = { nombre: -1, correo: -1, tarea: -1, fecha: -1, porcentaje: -1, puntos: -1 };
 
-    // Validación: la fila de actividades debe tener nombres de texto
-    const actividadesRow = jsonData[actividadesRowIdx] as any[];
-    const textCells = actividadesRow.filter(
-      (cell) => typeof cell === 'string' && cell.trim().length > 2
-    );
-    if (textCells.length < 3) {
-      setGradesMessage({
-        text: 'No se detectó fila con nombres de actividades. Estructura esperada: Fila de pesos + Fila de actividades + Datos.',
-        type: 'error',
-      });
-      return;
-    }
+      for (let i = 0; i < Math.min(jsonData.length, 10); i++) {
+        const row = jsonData[i];
+        if (!Array.isArray(row)) continue;
 
-    // ─── PASO 3: Mapear columnas de PONDERACIONES ────────────────
-    const pondMapping = new Map<number, { nombre: string; peso: number }>();
+        const rowStr = row.map(normalize);
+        
+        const cNombre = rowStr.findIndex(c => c.includes('nombre'));
+        const cCorreo = rowStr.findIndex(c => c.includes('correo') || c.includes('mail'));
+        const cTarea = rowStr.findIndex(c => c.includes('tarea') || c.includes('actividad'));
+        const cFecha = rowStr.findIndex(c => c.includes('vencimiento') || c.includes('fecha'));
+        const cPorcentaje = rowStr.findIndex(c => c === 'porcentaje' || c.includes('calificacion'));
+        const cPuntos = rowStr.findIndex(c => c === 'puntos');
 
-    if (pesosRowIdx >= 0) {
-      const pesosRow = jsonData[pesosRowIdx] as any[];
-      const actRow = jsonData[actividadesRowIdx] as any[];
-
-      for (let col = 0; col < actRow.length; col++) {
-        const peso = pesosRow[col];
-        const nombre = String(actRow[col] ?? '').trim();
-
-        if (typeof peso === 'number' && peso > 0 && peso < 1 && nombre) {
-          pondMapping.set(col, { nombre, peso });
-        }
-      }
-    }
-
-    if (pondMapping.size === 0) {
-      setGradesMessage({
-        text: 'No se detectaron columnas de ponderación. Verifica que haya pesos (0.1, 0.2, etc.) en la estructura del archivo.',
-        type: 'error',
-      });
-      return;
-    }
-
-    // ─── PASO 4: Detectar columnas de MATRÍCULA y NOMBRE ──────────
-    const dataStartRow = actividadesRowIdx + 1; // Datos de alumnos comienzan aquí
-    const firstDataRow = jsonData[dataStartRow] as any[];
-
-    let idxMatricula = -1;
-    let idxNombre = -1;
-
-    // Buscar por posición típica (columna 2-3 suelen ser nombre/ID en BUAP)
-    const potentialNameCols = [1, 2]; // Columnas más comunes para nombres
-    const potentialIdCols = [2, 3];   // Columnas más comunes para ID
-
-    // Estrategia 1: Buscar por contenido numérico en filas de datos
-    for (let col = 0; col < 5; col++) {
-      let numericCount = 0;
-      for (let row = dataStartRow; row < Math.min(jsonData.length, dataStartRow + 5); row++) {
-        const val = String((jsonData[row] as any[])[col] ?? '').trim();
-        // Matrícula: 6+ dígitos
-        if (/^\d{6,}$/.test(val)) numericCount++;
-      }
-      if (numericCount >= 1 && idxMatricula < 0) idxMatricula = col;
-    }
-
-    // Estrategia 2: Nombre está típicamente en columna 1 o 2
-    if (idxNombre < 0) {
-      for (const col of potentialNameCols) {
-        const val = String((jsonData[dataStartRow] as any[])[col] ?? '').trim();
-        if (val && val.length > 3 && !/^\d+$/.test(val)) {
-          idxNombre = col;
+        // Si la fila tiene la columna de correo y al menos la de tarea o puntos, es la fila correcta
+        if (cCorreo !== -1 && (cTarea !== -1 || cPorcentaje !== -1 || cPuntos !== -1)) {
+          headerRowIndex = i;
+          colIndices = { nombre: cNombre, correo: cCorreo, tarea: cTarea, fecha: cFecha, porcentaje: cPorcentaje, puntos: cPuntos };
           break;
         }
       }
-    }
 
-    if (idxMatricula < 0 || idxNombre < 0) {
-      setGradesMessage({
-        text: 'No se encontraron columnas de Matrícula o Nombre. Estructura esperada: [Nombre | Matrícula | Actividades...]',
-        type: 'error',
+      if (headerRowIndex === -1 || colIndices.correo === -1 || (colIndices.porcentaje === -1 && colIndices.puntos === -1)) {
+        setGradesMessage({ text: 'No se encontraron las columnas necesarias de Teams (Dirección de correo, Tarea, Porcentaje/Puntos).', type: 'error' });
+        return;
+      }
+
+      // Separamos los datos de los alumnos (lo que va después de los encabezados)
+      const dataRows = jsonData.slice(headerRowIndex + 1);
+
+      // Determinar la escala de calificación (si es de 0 a 1 o de 0 a 100)
+      const valCol = colIndices.porcentaje !== -1 ? colIndices.porcentaje : colIndices.puntos;
+      const maxVal = Math.max(...dataRows.map(r => {
+        const val = String(r[valCol] || '').replace('%', '');
+        return Number(val) || 0;
+      }));
+      const isScale0to1 = (maxVal > 0 && maxVal <= 1.0);
+
+      // Extraer los metadatos de la actividad desde la primera fila que tenga contenido en Tarea
+      const validRow = dataRows.find(r => r[colIndices.tarea] && String(r[colIndices.tarea]).trim() !== '');
+      setActividadMeta({
+        nombre: validRow && colIndices.tarea !== -1 ? String(validRow[colIndices.tarea]) : 'Actividad importada',
+        fecha: validRow && colIndices.fecha !== -1 ? String(validRow[colIndices.fecha]) : ''
       });
-      return;
-    }
 
-    // ─── PASO 5: Extraer datos de ALUMNOS ──────────────────────────
-    const preview: Array<{ matricula: string; calificaciones: Record<string, number> }> = [];
-
-    for (let r = dataStartRow; r < jsonData.length; r++) {
-      const row = jsonData[r] as any[];
-      const matriculaRaw = String(row[idxMatricula] ?? '').trim().replace(/\D/g, '');
-
-      if (!matriculaRaw || matriculaRaw.length < 5) continue;
-
-      const calificaciones: Record<string, number> = {};
-
-      // Iterar sobre columnas mapeadas de ponderaciones
-      for (const [col, { nombre }] of pondMapping) {
-        const val = row[col];
-        const num = Number(val);
-        if (!Number.isNaN(num) && num >= 0) {
-          calificaciones[nombre] = num;
+      // Procesar cada alumno
+      const preview = dataRows.map(r => {
+        const correo = String(r[colIndices.correo] || '').trim().toLowerCase();
+        const nombre = colIndices.nombre !== -1 ? String(r[colIndices.nombre] || 'Sin Nombre') : 'Sin Nombre';
+        
+        let puntaje = 0;
+        // Tomar calificación de la columna Porcentaje, o Puntos si no hay Porcentaje
+        if (colIndices.porcentaje !== -1 && r[colIndices.porcentaje] !== '') {
+             puntaje = Number(String(r[colIndices.porcentaje]).replace('%', '')) || 0;
+        } else if (colIndices.puntos !== -1 && r[colIndices.puntos] !== '') {
+             puntaje = Number(String(r[colIndices.puntos]).replace('%', '')) || 0;
         }
-      }
 
-      // Solo agregar si tiene al menos una calificación
-      if (Object.keys(calificaciones).length > 0) {
-        preview.push({
-          matricula: matriculaRaw,
-          calificaciones,
-        });
-      }
-    }
+        // Estandarizar a escala 0-100
+        if (isScale0to1) puntaje = puntaje * 100;
 
-    if (preview.length === 0) {
-      setGradesMessage({
-        text: 'No se detectaron filas válidas de alumnos con calificaciones.',
-        type: 'error',
+        return { correo, nombre, puntaje };
+      }).filter(r => r.correo.includes('@')); // Ignorar las filas en blanco
+
+      setGradesPreview(preview);
+      const activityName = validRow && colIndices.tarea !== -1 ? validRow[colIndices.tarea] : 'Actividad Teams';
+      setGradesMessage({ 
+        text: `Actividad detectada: "${activityName}". ${preview.length} alumnos listos. Escala: ${isScale0to1 ? '0-1 estandarizada a 100%' : '0-100%'}`, 
+        type: 'success' 
       });
-      return;
+
+    } catch (error) {
+      console.error('Error en handleGradesPreview:', error);
+      setGradesMessage({ text: 'No se pudo leer el archivo. Intenta descargarlo de nuevo desde Teams.', type: 'error' });
     }
+  };
 
-    setGradesPreview(preview.slice(0, 200));
-    const pondNames = Array.from(pondMapping.values())
-      .map((p) => p.nombre)
-      .join(', ');
-    setGradesMessage({
-      text: `Detectadas ${preview.length} filas. Ponderaciones: ${pondNames}`,
-      type: 'success',
-    });
-  } catch (error) {
-    console.error('Error en handleGradesPreview:', error);
-    setGradesMessage({
-      text: 'No se pudo leer el archivo. Usa .xlsx exportado desde Excel.',
-      type: 'error',
-    });
-  }
-};
-
-
-  // ─────────────────────────────────────────────────────────────────────────
-
+  // NUEVO ENVÍO CON METADATOS COMPLETOS AL BACKEND
   const handleImportGrades = async () => {
-    if (gradesPreview.length === 0) return;
+    if (gradesPreview.length === 0 || !selectedPonderacionId || !actividadMeta) return;
     setGradesLoading(true);
     setGradesMessage({ text: '', type: '' });
     try {
-      const subjectId = (subject as any).uuid || subject.id;
       const res = await fetch(`/api/professor/subject/${subject.id}/calificaciones/import`, {
         method: 'POST',
         headers: authedHeaders(),
-        body: JSON.stringify({ rows: gradesPreview }),
+        body: JSON.stringify({ 
+          ponderacionId: selectedPonderacionId,
+          actividadNombre: actividadMeta.nombre,
+          fechaVencimiento: actividadMeta.fecha,
+          calificaciones: gradesPreview 
+        }),
       });
       const data = await res.json();
       if (!res.ok || !data.success) {
         setGradesMessage({ text: data?.message || 'No se pudo importar calificaciones.', type: 'error' });
         return;
       }
-      setGradesMessage({ text: `Importación OK. Registros: ${data.imported}.`, type: 'success' });
+      setGradesMessage({ text: `¡Actividad "${data.actividad}" registrada con éxito! ${data.imported} calificaciones guardadas.`, type: 'success' });
       setGradesFile(null);
       setGradesPreview([]);
+      setActividadMeta(null);
+      setSelectedPonderacionId('');
     } catch {
       setGradesMessage({ text: 'Error de conexión al importar calificaciones.', type: 'error' });
     } finally {
@@ -1167,7 +1096,6 @@ const handleGradesPreview = async () => {
   const fetchConcentrado = useCallback(async () => {
     setConcentradoLoading(true);
     try {
-      const subjectId = (subject as any).uuid || subject.id;
       const res = await fetch(`/api/professor/subject/${subject.id}/concentrado`, {
         headers: { Authorization: `Bearer ${localStorage.getItem('token')}` },
       });
@@ -1186,16 +1114,13 @@ const handleGradesPreview = async () => {
 
   const handleSavePonderacion = async () => {
     const pct = Number(newPond.porcentaje);
-
     if (!newPond.nombre.trim()) { setPondError('El nombre es requerido.'); return; }
     if (!pct || pct <= 0 || pct > 100) { setPondError('El porcentaje debe ser entre 1 y 100.'); return; }
     if (totalPct + pct > 100) { setPondError(`No puedes superar 100%. Disponible: ${100 - totalPct}%.`); return; }
 
     setPondError('');
     setPondLoading(true);
-
     try {
-      const subjectId = (subject as any).uuid || subject.id; 
       const res = await fetch(`/api/professor/subject/${subject.id}/ponderaciones`, {
         method: 'POST',
         headers: authedHeaders(),
@@ -1206,7 +1131,6 @@ const handleGradesPreview = async () => {
         setPondError(data?.message || 'No se pudo guardar la ponderación.');
         return;
       }
-
       setPonderaciones((prev) => [...prev, data.ponderacion]);
       setIsAddingPond(false);
       setNewPond({ nombre: '', porcentaje: '' });
@@ -1234,33 +1158,23 @@ const handleGradesPreview = async () => {
   const handleUpdatePonderacion = async (pondId: number) => {
     const pct = Number(editPond.porcentaje);
     const totalSinActual = ponderaciones.reduce((a, c) => (c.id === pondId ? a : a + c.porcentaje), 0);
-
     if (!editPond.nombre.trim()) { setPondError('El nombre es requerido.'); return; }
     if (!pct || pct <= 0 || pct > 100) { setPondError('El porcentaje debe ser entre 1 y 100.'); return; }
     if (totalSinActual + pct > 100) { setPondError(`No puedes superar 100%. Disponible: ${100 - totalSinActual}%.`); return; }
 
     setPondError('');
     setPondLoading(true);
-
     try {
       const res = await fetch(`/api/professor/subject/${subject.id}/ponderaciones/${pondId}`, {
         method: 'PATCH',
         headers: authedHeaders(),
         body: JSON.stringify({ nombre: editPond.nombre.trim(), porcentaje: pct }),
       });
-      const raw = await res.text();
-      const data = raw ? (() => {
-        try {
-          return JSON.parse(raw);
-        } catch {
-          return {};
-        }
-      })() : {};
+      const data = await res.json();
       if (!res.ok || !data.success) {
-        setPondError(data?.message || `No se pudo actualizar la ponderación. Código: ${res.status}.`);
+        setPondError(data?.message || 'No se pudo actualizar la ponderación.');
         return;
       }
-
       await fetchPonderaciones();
       cancelEditPonderacion();
       if (activeEvalTab === 'concentrado') fetchConcentrado();
@@ -1273,33 +1187,21 @@ const handleGradesPreview = async () => {
   };
 
   const handleDeletePonderacion = async (pond: Ponderacion) => {
-    const confirmed = window.confirm(
-      `¿Eliminar la ponderación "${pond.nombre}"? También se borrarán las calificaciones asociadas.`
-    );
+    const confirmed = window.confirm(`¿Eliminar la ponderación "${pond.nombre}"? También se borrarán las calificaciones asociadas.`);
     if (!confirmed) return;
 
     setPondError('');
     setDeletingPondId(pond.id);
-
     try {
       const res = await fetch(`/api/professor/subject/${subject.id}/ponderaciones/${pond.id}`, {
         method: 'DELETE',
         headers: authedHeaders(),
       });
-      const raw = await res.text();
-      const data = raw ? (() => {
-        try {
-          return JSON.parse(raw);
-        } catch {
-          return {};
-        }
-      })() : {};
-
+      const data = await res.json();
       if (!res.ok || !data.success) {
-        setPondError(data?.message || `No se pudo eliminar la ponderación. Código: ${res.status}.`);
+        setPondError(data?.message || 'No se pudo eliminar la ponderación.');
         return;
       }
-
       await fetchPonderaciones();
       if (editingPondId === pond.id) cancelEditPonderacion();
       if (activeEvalTab === 'concentrado') fetchConcentrado();
@@ -1349,16 +1251,11 @@ const handleGradesPreview = async () => {
                         <button
                           onClick={() => handleUpdatePonderacion(pond.id)}
                           disabled={pondLoading || !editPond.nombre || !editPond.porcentaje}
-                          title="Guardar cambios"
                           className="h-10 w-10 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white rounded-lg flex items-center justify-center transition-colors"
                         >
                           {pondLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
                         </button>
-                        <button
-                          onClick={cancelEditPonderacion}
-                          title="Cancelar edición"
-                          className="h-10 w-10 bg-white border border-slate-200 text-slate-500 hover:text-slate-700 rounded-lg flex items-center justify-center transition-colors"
-                        >
+                        <button onClick={cancelEditPonderacion} className="h-10 w-10 bg-white border border-slate-200 text-slate-500 hover:text-slate-700 rounded-lg flex items-center justify-center transition-colors">
                           <X className="w-4 h-4" />
                         </button>
                       </div>
@@ -1368,19 +1265,10 @@ const handleGradesPreview = async () => {
                       <span className="text-sm font-semibold text-slate-700">{pond.nombre}</span>
                       <div className="flex items-center gap-2">
                         <span className="text-sm font-bold text-blue-600 bg-blue-100 px-3 py-1 rounded-lg">{pond.porcentaje}%</span>
-                        <button
-                          onClick={() => startEditPonderacion(pond)}
-                          title="Editar ponderación"
-                          className="h-8 w-8 opacity-0 group-hover:opacity-100 bg-white border border-slate-200 text-slate-500 hover:text-blue-600 hover:border-blue-200 rounded-lg flex items-center justify-center transition-all"
-                        >
+                        <button onClick={() => startEditPonderacion(pond)} className="h-8 w-8 opacity-0 group-hover:opacity-100 bg-white border border-slate-200 text-slate-500 hover:text-blue-600 rounded-lg flex items-center justify-center transition-all">
                           <Pencil className="w-4 h-4" />
                         </button>
-                        <button
-                          onClick={() => handleDeletePonderacion(pond)}
-                          disabled={deletingPondId === pond.id}
-                          title="Eliminar ponderación"
-                          className="h-8 w-8 opacity-0 group-hover:opacity-100 bg-white border border-slate-200 text-slate-500 hover:text-red-600 hover:border-red-200 disabled:opacity-50 rounded-lg flex items-center justify-center transition-all"
-                        >
+                        <button onClick={() => handleDeletePonderacion(pond)} disabled={deletingPondId === pond.id} className="h-8 w-8 opacity-0 group-hover:opacity-100 bg-white border border-slate-200 text-slate-500 hover:text-red-600 disabled:opacity-50 rounded-lg flex items-center justify-center transition-all">
                           {deletingPondId === pond.id ? <Loader2 className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4" />}
                         </button>
                       </div>
@@ -1400,7 +1288,7 @@ const handleGradesPreview = async () => {
           </div>
 
           {isAddingPond ? (
-            <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} className="space-y-3 p-4 bg-blue-50/50 rounded-xl border border-blue-100">
+            <div className="space-y-3 p-4 bg-blue-50/50 rounded-xl border border-blue-100">
               <input
                 type="text"
                 placeholder="Ej. Proyecto Final"
@@ -1430,7 +1318,7 @@ const handleGradesPreview = async () => {
               <button onClick={() => { setIsAddingPond(false); setPondError(''); }} className="w-full text-xs text-slate-500 hover:text-slate-700 font-medium">
                 Cancelar
               </button>
-            </motion.div>
+            </div>
           ) : (
             <button
               onClick={() => setIsAddingPond(true)}
@@ -1465,20 +1353,49 @@ const handleGradesPreview = async () => {
           {activeEvalTab === 'import' ? (
             <div className="space-y-4">
               <p className="text-sm text-slate-500">
-                Sube un archivo donde las columnas de actividades coincidan por nombre con tus ponderaciones. Debe incluir una columna de matrícula.
+                Selecciona la ponderación y sube el archivo descargado de Teams.
               </p>
-              <div className="border-2 border-dashed border-blue-200 rounded-2xl p-6 bg-blue-50/50">
-                <input
-                  type="file"
-                  accept=".csv,.xlsx"
-                  onChange={(e) => { setGradesFile(e.target.files?.[0] || null); setGradesPreview([]); setGradesMessage({ text: '', type: '' }); }}
-                  className="block w-full text-sm text-slate-500 file:mr-4 file:py-2.5 file:px-6 file:rounded-xl file:border-0 file:text-sm file:font-bold file:bg-blue-100 file:text-blue-700 hover:file:bg-blue-200 transition-colors cursor-pointer"
-                />
+
+              <div className="space-y-4 bg-slate-50 p-6 rounded-2xl border border-slate-200">
+                {/* 1. SELECCIÓN DE PONDERACIÓN AFECTADA */}
+                <div>
+                  <label className="block text-sm font-semibold text-slate-700 mb-2">1. Seleccionar Ponderación a afectar</label>
+                  <select
+                    value={selectedPonderacionId}
+                    onChange={(e) => setSelectedPonderacionId(e.target.value === '' ? '' : Number(e.target.value))}
+                    className="w-full bg-white border border-slate-300 rounded-xl px-4 py-3 text-sm focus:border-blue-500 focus:ring-2 focus:ring-blue-100 outline-none transition-all"
+                  >
+                    <option value="">-- Elige una ponderación --</option>
+                    {ponderaciones.map(p => (
+                      <option key={p.id} value={p.id}>{p.nombre} ({p.porcentaje}%)</option>
+                    ))}
+                  </select>
+                </div>
+
+                {/* 2. CARGA DEL ARCHIVO */}
+                <div>
+                  <label className="block text-sm font-semibold text-slate-700 mb-2">2. Subir exportación de Teams (.csv, .xlsx)</label>
+                  <div className="border-2 border-dashed border-blue-200 rounded-2xl p-6 bg-blue-50/50">
+                    <input
+                      type="file"
+                      accept=".csv,.xlsx"
+                      onChange={(e) => { 
+                        setGradesFile(e.target.files?.[0] || null); 
+                        setGradesPreview([]); 
+                        setActividadMeta(null);
+                        setGradesMessage({ text: '', type: '' }); 
+                      }}
+                      disabled={!selectedPonderacionId}
+                      className="block w-full text-sm text-slate-500 file:mr-4 file:py-2.5 file:px-6 file:rounded-xl file:border-0 file:text-sm file:font-bold file:bg-blue-100 file:text-blue-700 hover:file:bg-blue-200 transition-colors cursor-pointer disabled:opacity-50"
+                    />
+                  </div>
+                </div>
               </div>
+
               <div className="flex gap-3">
                 <button
                   onClick={handleGradesPreview}
-                  disabled={!gradesFile || ponderaciones.length === 0}
+                  disabled={!gradesFile || !selectedPonderacionId}
                   className="flex-1 bg-slate-800 hover:bg-slate-900 text-white py-2.5 rounded-xl font-medium disabled:opacity-50"
                 >
                   Previsualizar
@@ -1489,7 +1406,7 @@ const handleGradesPreview = async () => {
                   className="flex-1 bg-green-600 hover:bg-green-700 text-white py-2.5 rounded-xl font-medium disabled:opacity-50 flex items-center justify-center gap-2"
                 >
                   {gradesLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
-                  Importar
+                  Confirmar e Importar
                 </button>
               </div>
 
@@ -1499,19 +1416,30 @@ const handleGradesPreview = async () => {
                 </div>
               )}
 
-              {gradesPreview.length > 0 && (
-                <div className="border border-slate-200 rounded-xl overflow-hidden">
+              {gradesPreview.length > 0 && actividadMeta && (
+                <div className="border border-slate-200 rounded-xl overflow-hidden mt-4">
+                  <div className="bg-blue-50 px-4 py-3 border-b border-blue-100 flex justify-between items-center">
+                    <div>
+                      <span className="text-xs font-bold uppercase text-blue-500 tracking-wider">Actividad Detectada:</span>
+                      <p className="text-sm font-bold text-slate-800">{actividadMeta.nombre}</p>
+                    </div>
+                    <div className="text-right">
+                      <span className="text-xs font-bold uppercase text-blue-500 tracking-wider">Vencimiento:</span>
+                      <p className="text-sm font-bold text-slate-800">{actividadMeta.fecha || 'N/A'}</p>
+                    </div>
+                  </div>
                   <div className="bg-slate-50 px-4 py-2 text-xs text-slate-500">
-                    Vista previa (primeras {Math.min(gradesPreview.length, 10)} filas)
+                    Alumnos procesados (primeras 10 filas mostradas)
                   </div>
                   <div className="p-4 space-y-2">
                     {gradesPreview.slice(0, 10).map((r, idx) => (
-                      <div key={idx} className="text-sm">
-                        <span className="font-mono text-slate-600">{r.matricula}</span>
-                        <span className="text-slate-400"> — </span>
-                        <span className="text-slate-700">
-                          {Object.entries(r.calificaciones).slice(0, 4).map(([k, v]) => `${k}: ${v}`).join(', ')}
-                          {Object.keys(r.calificaciones).length > 4 ? '…' : ''}
+                      <div key={idx} className="text-sm flex justify-between border-b border-slate-50 pb-1">
+                        <div>
+                          <span className="font-medium text-slate-700 block">{r.nombre}</span>
+                          <span className="text-xs text-slate-400">{r.correo}</span>
+                        </div>
+                        <span className="font-bold text-blue-600 self-center">
+                          {Number(r.puntaje).toFixed(1)}%
                         </span>
                       </div>
                     ))}
