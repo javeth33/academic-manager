@@ -1066,6 +1066,13 @@ async function startServer() {
         const subjectId = Number(req.params.id);
         if (!subjectId) return res.status(400).json({ success: false, message: "Materia inválida." });
 
+        // NUEVO: Obtener estado de cerrada
+        const { data: materiaInfo } = await supabase
+          .from("materias")
+          .select("cerrada, lista_descargada")
+          .eq("id", subjectId)
+          .single();
+
         // 1. Obtener Ponderaciones de la materia
         const { data: ponderaciones, error: pondErr } = await supabase
           .from("ponderaciones")
@@ -1126,7 +1133,6 @@ async function startServer() {
           registrosAsistencia = regs || [];
         }
 
-        // Lógica solicitada: Contamos como días de clase únicamente las sesiones que posean al menos un registro
         const sesionesConRegistros = new Set(registrosAsistencia.map(r => r.sesion_id));
         const totalSesionesValidas = sesionesConRegistros.size;
 
@@ -1145,7 +1151,6 @@ async function startServer() {
             return acc;
           }, {} as Record<number, number>);
 
-          // Contar cuántas asistencias "presente" tiene el alumno dentro de los días válidos de pase de lista
           const asistidas = registrosAsistencia.filter(
             r => Number(r.alumno_id) === Number(u.id) && r.estado === 'presente' && sesionesConRegistros.has(r.sesion_id)
           ).length;
@@ -1165,7 +1170,9 @@ async function startServer() {
           success: true, 
           ponderaciones: structuredPonderaciones, 
           students,
-          totalSesiones: totalSesionesValidas
+          totalSesiones: totalSesionesValidas,
+          cerrada: materiaInfo?.cerrada || false, // <-- Propiedad clave devuelta
+          listaDescargada: materiaInfo?.lista_descargada || false
         });
       } catch (error: any) {
         console.error("[actividades-detalle] Error:", error);
@@ -1174,6 +1181,47 @@ async function startServer() {
     }
   );
 
+  // NUEVO: Cerrar materia definitivamente
+  app.post(
+    "/api/professor/subject/:id/close",
+    authMiddleware,
+    requireRole("professor", "admin"),
+    async (req, res) => {
+      try {
+        const subjectId = Number(req.params.id);
+        const { error } = await supabase
+          .from("materias")
+          .update({ cerrada: true, fecha_cierre: new Date().toISOString() })
+          .eq("id", subjectId);
+
+        if (error) throw error;
+        return res.json({ success: true, message: "Materia cerrada exitosamente." });
+      } catch (error: any) {
+        console.error("[close-subject] Error:", error);
+        return res.status(500).json({ success: false, message: "Error al cerrar la materia." });
+      }
+    }
+  );
+// NUEVO: Congelar materia (cuando se descarga la lista final)
+  app.post(
+    "/api/professor/subject/:id/freeze",
+    authMiddleware,
+    requireRole("professor", "admin"),
+    async (req, res) => {
+      try {
+        const subjectId = Number(req.params.id);
+        const { error } = await supabase
+          .from("materias")
+          .update({ lista_descargada: true })
+          .eq("id", subjectId);
+
+        if (error) throw error;
+        return res.json({ success: true, message: "Calificaciones congeladas." });
+      } catch (error: any) {
+        return res.status(500).json({ success: false, message: "Error al congelar la materia." });
+      }
+    }
+  );
 
   // Actualizar una calificación individual desde la matriz de desglose
   app.post(

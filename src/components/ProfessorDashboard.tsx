@@ -1,6 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Users, Clock, Calendar, Upload, CheckSquare, ArrowLeft, MapPin, Loader2, CheckCircle, AlertCircle, QrCode, X, Percent, Plus, Pencil, Save, Trash2 } from 'lucide-react';
-import { motion, AnimatePresence } from 'motion/react';
+import { Users, Clock, Calendar, Upload, CheckSquare, ArrowLeft, MapPin, Loader2, CheckCircle, AlertCircle, QrCode, X, Percent, Plus, Pencil, Save, Trash2, Download, Lock } from 'lucide-react';import { motion, AnimatePresence } from 'motion/react';
 import QRScanner from './QRScanner';
 import * as XLSX from 'xlsx';
 
@@ -317,11 +316,10 @@ export default function ProfessorDashboard({ user }: ProfessorDashboardProps) {
   );
 }
   // ─── DesgloseTab ────────────────────────────────────────────────────────────
-
 function DesgloseTab({ subject }: { subject: Subject }) {
   const [loading, setLoading] = useState(true);
   const [data, setData] = useState<any>(null);
-  const [isEditingMode, setIsEditingMode] = useState(false); // Estado para activar/desactivar la edición global
+  const [isEditingMode, setIsEditingMode] = useState(false);
 
   const fetchDesglose = useCallback(async () => {
     setLoading(true);
@@ -344,12 +342,10 @@ function DesgloseTab({ subject }: { subject: Subject }) {
     fetchDesglose();
   }, [fetchDesglose]);
 
-  // Manejador del guardado automático por celda (al salir del input o pulsar Enter)
   const handleCellSave = async (alumnoId: number, actividadId: number, rawValue: string, currentScore: any) => {
     const newValue = rawValue.trim() === '' ? null : Number(rawValue);
     const oldValue = currentScore !== undefined && currentScore !== null ? Number(currentScore) : null;
-
-    if (newValue === oldValue) return; // Si no cambió el valor, no hacemos petición
+    if (newValue === oldValue) return;
 
     if (newValue !== null && (newValue < 0 || newValue > 100)) {
       alert('La calificación debe ser un número entre 0 y 100.');
@@ -368,28 +364,126 @@ function DesgloseTab({ subject }: { subject: Subject }) {
       const result = await res.json();
       
       if (result.success) {
-        // Actualizamos de forma reactiva y local el diccionario de notas del alumno modificado
         setData((prevData: any) => {
           const updatedStudents = prevData.students.map((student: any) => {
             if (student.id === alumnoId) {
-              return {
-                ...student,
-                calificaciones: {
-                  ...student.calificaciones,
-                  [actividadId]: newValue
-                }
-              };
+              return { ...student, calificaciones: { ...student.calificaciones, [actividadId]: newValue } };
             }
             return student;
           });
           return { ...prevData, students: updatedStudents };
         });
+      } else { alert('Error al guardar: ' + result.message); }
+    } catch (err) { alert('Error de comunicación con el servidor al guardar nota.'); }
+  };
+
+  const handleCloseSubject = async () => {
+    if (!window.confirm("¿Estás seguro de que deseas CERRAR la materia?\n\nPodrás seguir editando calificaciones, pero se habilitará el botón para descargar la Lista Final oficial.")) return;
+
+    try {
+      const res = await fetch(`/api/professor/subject/${subject.id}/close`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${localStorage.getItem('token')}` }
+      });
+      const result = await res.json();
+      if (result.success) {
+        fetchDesglose(); 
       } else {
-        alert('Error al guardar: ' + result.message);
+        alert(result.message);
       }
-    } catch (err) {
-      console.error('[handleCellSave] Error:', err);
-      alert('Error de comunicación con el servidor al guardar nota.');
+    } catch (e) {
+      alert("Error al cerrar la materia.");
+    }
+  };
+
+  const handleExportFinal = async () => {
+    if (!data || !data.cerrada) return;
+
+    // Lógica de congelamiento si es la primera descarga
+    if (!data.listaDescargada) {
+      const confirmar = window.confirm("⚠️ ATENCIÓN ⚠️\n\nAl descargar la Lista Final, el sistema ASUMIRÁ QUE LAS CALIFICACIONES SON DEFINITIVAS y bloqueará permanentemente la edición.\n\n¿Deseas descargar el documento y congelar las calificaciones?");
+      if (!confirmar) return;
+    }
+
+    const { ponderaciones, students } = data;
+    const aoa: any[][] = [];
+
+    const rowPct = ['', '', '', ''];
+    const rowPond = ['', '', '', ''];
+    const rowActs = ['#', 'Nombre de Alumno', 'ID', ''];
+
+    ponderaciones.forEach((p: any) => {
+      if (p.actividades.length > 0) {
+        p.actividades.forEach((act: any, i: number) => {
+          if (i === 0) {
+            rowPct.push(`${p.porcentaje}%`);
+            rowPond.push(p.nombre);
+          } else {
+            rowPct.push('');
+            rowPond.push('');
+          }
+          rowActs.push(act.nombre);
+        });
+      }
+    });
+
+    rowPct.push('Calificación', 'Final');
+    rowPond.push('', '');
+    rowActs.push('', '');
+
+    aoa.push(rowPct);
+    aoa.push(rowPond);
+    aoa.push(rowActs);
+
+    students.forEach((s: any, idx: number) => {
+      const row: any[] = [idx + 1, s.nombre, s.matricula, ''];
+      let acumuladoPonderado = 0;
+
+      ponderaciones.forEach((p: any) => {
+        let sumActs = 0;
+        let countActs = 0;
+        
+        if (p.actividades.length > 0) {
+          p.actividades.forEach((act: any) => {
+            const score = s.calificaciones[act.id];
+            if (score !== null && score !== undefined) {
+              sumActs += Number(score);
+            }
+            countActs++;
+            row.push(score !== null && score !== undefined ? score : 0);
+          });
+          
+          const promPond = (sumActs / countActs);
+          acumuladoPonderado += promPond * (Number(p.porcentaje) / 100);
+        }
+      });
+
+      const promBase10 = acumuladoPonderado / 10;
+      const calificacion = Number(promBase10.toFixed(2));
+      const finalRounded = Math.round(calificacion);
+
+      row.push(calificacion);
+      row.push(finalRounded);
+      aoa.push(row);
+    });
+
+    const ws = XLSX.utils.aoa_to_sheet(aoa);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Lista Final");
+    XLSX.writeFile(wb, `Lista_Final_${subject.name.replace(/\s+/g, '_')}.xlsx`);
+
+    // Si no estaba congelada, llamamos al endpoint para congelar la edición
+    if (!data.listaDescargada) {
+      try {
+        await fetch(`/api/professor/subject/${subject.id}/freeze`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${localStorage.getItem('token')}` }
+        });
+        setIsEditingMode(false); // Apagamos el modo edición automáticamente
+        fetchDesglose(); // Recargamos para reflejar el estado "Congelado"
+      } catch (e) {
+        console.error("Error al congelar la materia", e);
+      }
     }
   };
 
@@ -410,40 +504,69 @@ function DesgloseTab({ subject }: { subject: Subject }) {
     );
   }
 
-  const { ponderaciones, students, totalSesiones } = data;
+  const { ponderaciones, students, totalSesiones, cerrada, listaDescargada } = data;
   const hasActivities = ponderaciones.some((p: any) => p.actividades && p.actividades.length > 0);
 
   return (
     <div className="bg-white rounded-2xl shadow-sm border border-blue-100 overflow-hidden flex flex-col">
-      <div className="p-6 border-b border-blue-50 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+      {/* CABECERA CON BOTONES DE CIERRE Y EXPORTACIÓN */}
+      <div className="p-6 border-b border-blue-50 flex flex-col xl:flex-row justify-between items-start xl:items-center gap-4">
         <div>
           <h3 className="font-bold text-slate-800 flex items-center gap-2">
             <CheckSquare className="w-5 h-5 text-blue-600" /> Matriz de Calificaciones y Asistencia
           </h3>
           <p className="text-sm text-slate-500 mt-1">
-            Visualiza las calificaciones en puntaje base 100 y el récord exacto de días de pase de lista.
+            Visualiza y edita las calificaciones. Cierra la materia para obtener el documento oficial.
           </p>
         </div>
-        {hasActivities && (
+        
+        <div className="flex flex-wrap items-center gap-3 w-full xl:w-auto">
+          {hasActivities && !listaDescargada && (
+            <button
+              onClick={() => setIsEditingMode(!isEditingMode)}
+              className={`px-4 py-2 rounded-xl text-sm font-semibold transition-all shadow-sm border flex items-center gap-1.5 ${
+                isEditingMode 
+                  ? 'bg-blue-100 text-blue-800 border-blue-200' 
+                  : 'bg-white hover:bg-slate-50 text-slate-700 border-slate-200'
+              }`}
+            >
+              <Pencil className="w-4 h-4" /> {isEditingMode ? 'Vista de Lectura' : 'Editar Notas'}
+            </button>
+          )}
+
+          {listaDescargada && (
+            <span className="px-4 py-2 bg-red-50 text-red-700 border border-red-200 rounded-xl text-sm font-semibold flex items-center gap-1.5 cursor-default">
+              <Lock className="w-4 h-4 text-red-500" /> Edición Congelada
+            </span>
+          )}
+
+          {!cerrada ? (
+            <button
+              onClick={handleCloseSubject}
+              className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-xl text-sm font-semibold transition-all shadow-sm flex items-center gap-1.5"
+            >
+              <CheckCircle className="w-4 h-4" /> Cerrar Materia
+            </button>
+          ) : (
+            !listaDescargada && (
+              <span className="px-4 py-2 bg-slate-100 text-slate-600 border border-slate-200 rounded-xl text-sm font-semibold flex items-center gap-1.5 cursor-default">
+                <CheckCircle className="w-4 h-4 text-emerald-500" /> Materia Cerrada
+              </span>
+            )
+          )}
+
           <button
-            onClick={() => setIsEditingMode(!isEditingMode)}
-            className={`px-4 py-2 rounded-xl text-sm font-semibold transition-all shadow-sm flex items-center gap-1.5 border ${
-              isEditingMode 
-                ? 'bg-green-600 hover:bg-green-700 text-white border-green-600' 
-                : 'bg-white hover:bg-slate-50 text-slate-700 border-slate-200'
+            disabled={!cerrada}
+            onClick={handleExportFinal}
+            className={`px-4 py-2 rounded-xl text-sm font-semibold transition-all flex items-center gap-1.5 border ${
+              cerrada
+                ? 'bg-emerald-600 hover:bg-emerald-700 text-white border-emerald-600 shadow-sm'
+                : 'bg-slate-50 text-slate-400 border-slate-200 cursor-not-allowed opacity-70'
             }`}
           >
-            {isEditingMode ? (
-              <>
-                <CheckCircle className="w-4 h-4" /> Vista de Lectura
-              </>
-            ) : (
-              <>
-                <Pencil className="w-4 h-4" /> Editar Calificaciones
-              </>
-            )}
+            <Download className="w-4 h-4" /> Exportar Lista Final
           </button>
-        )}
+        </div>
       </div>
 
       {!hasActivities && totalSesiones === 0 ? (
@@ -454,7 +577,6 @@ function DesgloseTab({ subject }: { subject: Subject }) {
         <div className="overflow-x-auto relative">
           <table className="w-full text-left text-sm whitespace-nowrap">
             <thead className="bg-slate-50 text-slate-600 text-xs tracking-wider">
-              {/* Primera fila: Cabeceras de Sección */}
               <tr>
                 <th className="px-4 py-3 border-b border-slate-200 sticky left-0 z-20 bg-slate-50" colSpan={2}></th>
                 <th className="px-4 py-2 border-b border-l border-slate-200 text-center font-bold bg-emerald-50 text-emerald-800">
@@ -468,7 +590,6 @@ function DesgloseTab({ subject }: { subject: Subject }) {
                   ) : null
                 ))}
               </tr>
-              {/* Segunda fila: Columnas e Items de Actividades */}
               <tr>
                 <th className="px-4 py-3 border-b border-slate-200 font-bold sticky left-0 z-20 bg-slate-50 min-w-[120px]">Matrícula</th>
                 <th className="px-4 py-3 border-b border-slate-200 font-bold sticky left-[120px] z-20 bg-slate-50 min-w-[250px]">Nombre del Alumno</th>
@@ -494,12 +615,10 @@ function DesgloseTab({ subject }: { subject: Subject }) {
                     {s.nombre}
                   </td>
                   
-                  {/* Celda de Asistencia */}
                   <td className="px-4 py-3 border-l border-slate-100 text-center font-bold text-emerald-700 bg-emerald-50/20">
                     {s.asistencias} / {totalSesiones}
                   </td>
 
-                  {/* Celdas de Calificaciones Dinámicas (Lectura o Entrada de Datos) */}
                   {ponderaciones.map((p: any) => (
                     p.actividades.map((act: any) => {
                       const score = s.calificaciones[act.id];
@@ -507,7 +626,8 @@ function DesgloseTab({ subject }: { subject: Subject }) {
                       
                       return (
                         <td key={`score-${s.id}-${act.id}`} className="px-4 py-2 border-l border-slate-100 text-center min-w-[150px]">
-                          {isEditingMode ? (
+                          {/* AQUI SE VALIDA QUE NO ESTÉ CONGELADA LA LISTA PARA PODER EDITAR */}
+                          {isEditingMode && !listaDescargada ? (
                             <input
                               type="number"
                               min="0"
