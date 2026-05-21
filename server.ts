@@ -1013,6 +1013,95 @@ async function startServer() {
       }
     }
   );
+
+  // Desglose detallado de actividades por alumno
+  app.get(
+    "/api/professor/subject/:id/actividades-detalle",
+    authMiddleware,
+    requireRole("professor", "admin"),
+    async (req, res) => {
+      try {
+        const subjectId = Number(req.params.id);
+        if (!subjectId) return res.status(400).json({ success: false, message: "Materia inválida." });
+
+        // 1. Obtener Ponderaciones de la materia
+        const { data: ponderaciones, error: pondErr } = await supabase
+          .from("ponderaciones")
+          .select("id, nombre, porcentaje")
+          .eq("materia_id", subjectId)
+          .order("created_at", { ascending: true });
+        
+        if (pondErr) throw pondErr;
+
+        // 2. Obtener Actividades ligadas a esas ponderaciones
+        const pondIds = ponderaciones?.map(p => p.id) || [];
+        const { data: actividades, error: actErr } = await supabase
+          .from("actividades")
+          .select("id, nombre, ponderacion_id, created_at")
+          .in("ponderacion_id", pondIds)
+          .order("created_at", { ascending: true });
+        
+        if (actErr) throw actErr;
+
+        // 3. Obtener Alumnos activos en la clase
+        const { data: inscritos, error: insErr } = await supabase
+          .from("inscripciones")
+          .select("alumno_id, usuarios (id, nombre, matricula, correo)")
+          .eq("materia_id", subjectId)
+          .eq("estatus", "activo")
+          .not("alumno_id", "is", null);
+
+        if (insErr) throw insErr;
+        const alumnoIds = inscritos?.map(i => i.alumno_id) || [];
+
+        // 4. Obtener Calificaciones
+        const actIds = actividades?.map(a => a.id) || [];
+        const { data: calificaciones, error: calErr } = await supabase
+          .from("calificaciones")
+          .select("alumno_id, actividad_id, puntaje")
+          .in("alumno_id", alumnoIds)
+          .in("actividad_id", actIds);
+        
+        if (calErr) throw calErr;
+
+        // 5. Estructurar la respuesta en un JSON fácil de iterar para React
+        const structuredPonderaciones = ponderaciones?.map(p => ({
+          ...p,
+          actividades: actividades?.filter(a => a.ponderacion_id === p.id) || []
+        })) || [];
+
+        const students = inscritos?.map((i: any) => {
+          const u = i.usuarios;
+          const studentGrades = calificaciones?.filter(c => c.alumno_id === u.id) || [];
+          
+          // Crear un diccionario rápido de { actividad_id: puntaje }
+          const calificacionesMap = studentGrades.reduce((acc, curr) => {
+            acc[curr.actividad_id] = curr.puntaje;
+            return acc;
+          }, {} as Record<number, number>);
+
+          return {
+            id: u.id,
+            nombre: u.nombre,
+            matricula: u.matricula,
+            calificaciones: calificacionesMap
+          };
+        }) || [];
+
+        // Ordenar alumnos alfabéticamente
+        students.sort((a, b) => a.nombre.localeCompare(b.nombre));
+
+        return res.json({ 
+          success: true, 
+          ponderaciones: structuredPonderaciones, 
+          students 
+        });
+      } catch (error: any) {
+        console.error("[actividades-detalle] Error:", error);
+        return res.status(500).json({ success: false, message: "Error interno al obtener el desglose." });
+      }
+    }
+  );
   // ── Asistencia QR ─────────────────────────────────────────────────────────────
 
   // Validar QR
@@ -1315,6 +1404,82 @@ async function startServer() {
 
     return res.json({ success: true, message: "Asistencia registrada." });
   });
+// Obtener el desglose de actividades y calificaciones de un alumno específico
+  app.get(
+    "/api/student/:studentId/subject/:subjectId/calificaciones-detalle",
+    authMiddleware,
+    requireRole("student"),
+    async (req, res) => {
+      try {
+        const studentId = Number(req.params.studentId);
+        const subjectId = Number(req.params.subjectId);
+
+        if (!studentId || !subjectId) {
+          return res.status(400).json({ success: false, message: "Parámetros inválidos." });
+        }
+
+        // 1. Obtener las ponderaciones de la materia
+        const { data: ponderaciones, error: pondErr } = await supabase
+          .from("ponderaciones")
+          .select("id, nombre, porcentaje")
+          .eq("materia_id", subjectId)
+          .order("created_at", { ascending: true });
+
+        if (pondErr) throw pondErr;
+
+        // 2. Obtener las actividades vinculadas a esas ponderaciones
+        const pondIds = ponderaciones?.map((p) => p.id) || [];
+        const { data: actividades, error: actErr } = await supabase
+          .from("actividades")
+          .select("id, nombre, ponderacion_id")
+          .in("ponderacion_id", pondIds)
+          .order("created_at", { ascending: true });
+
+        if (actErr) throw actErr;
+
+        // 3. Obtener las calificaciones del alumno para esas actividades
+        const actIds = actividades?.map((a) => a.id) || [];
+        let calificaciones: any[] = [];
+        
+        if (actIds.length > 0) {
+          const { data: califs, error: calErr } = await supabase
+            .from("calificaciones")
+            .select("actividad_id, puntaje")
+            .eq("alumno_id", studentId)
+            .in("actividad_id", actIds);
+
+          if (calErr) throw calErr;
+          calificaciones = califs || [];
+        }
+
+        // 4. Estructurar el árbol de datos: Ponderación -> Actividades con su calificación
+        const desglose = ponderaciones?.map((p) => {
+          const actsDePond = actividades?.filter((a) => a.ponderacion_id === p.id) || [];
+          
+          const actividadesConNota = actsDePond.map((act) => {
+            const calif = calificaciones.find((c) => c.actividad_id === act.id);
+            return {
+              id: act.id,
+              nombre: act.nombre,
+              puntaje: calif ? calif.puntaje : null // null significa que no se ha registrado o entregado
+            };
+          });
+
+          return {
+            id: p.id,
+            nombre: p.nombre,
+            porcentaje: p.porcentaje,
+            actividades: actividadesConNota
+          };
+        }) || [];
+
+        return res.json({ success: true, desglose });
+      } catch (error: any) {
+        console.error("[student-calificaciones] Error:", error);
+        return res.status(500).json({ success: false, message: "Error al obtener el desglose de calificaciones." });
+      }
+    }
+  );
 
   // ── Vite middleware ───────────────────────────────────────────────────────────
 

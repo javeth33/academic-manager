@@ -316,7 +316,131 @@ export default function ProfessorDashboard({ user }: ProfessorDashboardProps) {
     </div>
   );
 }
+  // ─── DesgloseTab ────────────────────────────────────────────────────────────
 
+function DesgloseTab({ subject }: { subject: Subject }) {
+  const [loading, setLoading] = useState(true);
+  const [data, setData] = useState<any>(null);
+
+  const fetchDesglose = useCallback(async () => {
+    setLoading(true);
+    try {
+      const res = await fetch(`/api/professor/subject/${subject.id}/actividades-detalle`, {
+        headers: { Authorization: `Bearer ${localStorage.getItem('token')}` },
+      });
+      const result = await res.json();
+      if (result.success) {
+        setData(result);
+      }
+    } catch (err) {
+      console.error('[DesgloseTab] fetch error:', err);
+    } finally {
+      setLoading(false);
+    }
+  }, [subject.id]);
+
+  useEffect(() => {
+    fetchDesglose();
+  }, [fetchDesglose]);
+
+  if (loading) {
+    return (
+      <div className="flex flex-col items-center justify-center py-12 bg-white rounded-2xl border border-blue-100 shadow-sm">
+        <Loader2 className="w-8 h-8 animate-spin text-blue-600 mb-4" />
+        <p className="text-slate-500 font-medium">Cargando matriz de calificaciones...</p>
+      </div>
+    );
+  }
+
+  if (!data || data.students.length === 0) {
+    return (
+      <div className="bg-white p-8 rounded-2xl shadow-sm border border-blue-100 text-center">
+        <p className="text-slate-500 font-medium">No hay alumnos activos en esta materia.</p>
+      </div>
+    );
+  }
+
+  const { ponderaciones, students } = data;
+  const hasActivities = ponderaciones.some((p: any) => p.actividades && p.actividades.length > 0);
+
+  return (
+    <div className="bg-white rounded-2xl shadow-sm border border-blue-100 overflow-hidden flex flex-col">
+      <div className="p-6 border-b border-blue-50">
+        <h3 className="font-bold text-slate-800 flex items-center gap-2">
+          <CheckSquare className="w-5 h-5 text-blue-600" /> Matriz de Calificaciones
+        </h3>
+        <p className="text-sm text-slate-500 mt-1">
+          Visualiza las calificaciones exactas de cada alumno por actividad.
+        </p>
+      </div>
+
+      {!hasActivities ? (
+        <div className="p-8 text-center text-slate-400 font-medium">
+          No has importado ninguna actividad todavía.
+        </div>
+      ) : (
+        <div className="overflow-x-auto relative">
+          <table className="w-full text-left text-sm whitespace-nowrap">
+            <thead className="bg-slate-50 text-slate-600 text-xs tracking-wider">
+              {/* Primera fila: Nombres de Ponderaciones */}
+              <tr>
+                <th className="px-4 py-3 border-b border-slate-200 sticky left-0 z-20 bg-slate-50" colSpan={2}></th>
+                {ponderaciones.map((p: any) => (
+                  p.actividades.length > 0 ? (
+                    <th key={`pond-${p.id}`} colSpan={p.actividades.length} className="px-4 py-2 border-b border-l border-slate-200 text-center font-bold bg-blue-50/80 text-blue-800">
+                      {p.nombre} ({p.porcentaje}%)
+                    </th>
+                  ) : null
+                ))}
+              </tr>
+              {/* Segunda fila: Nombres de Actividades */}
+              <tr>
+                <th className="px-4 py-3 border-b border-slate-200 font-bold sticky left-0 z-20 bg-slate-50 min-w-[120px]">Matrícula</th>
+                <th className="px-4 py-3 border-b border-slate-200 font-bold sticky left-[120px] z-20 bg-slate-50 min-w-[250px]">Nombre del Alumno</th>
+                {ponderaciones.map((p: any) => (
+                  p.actividades.map((act: any) => (
+                    <th key={`act-${act.id}`} className="px-4 py-3 border-b border-l border-slate-200 font-medium text-slate-500 text-center min-w-[150px]">
+                      {act.nombre}
+                    </th>
+                  ))
+                ))}
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {students.map((s: any) => (
+                <tr key={s.id} className="hover:bg-blue-50/50 transition-colors group">
+                  <td className="px-4 py-3 font-mono text-xs text-slate-600 sticky left-0 z-10 bg-white group-hover:bg-blue-50/50 border-r border-slate-100">
+                    {s.matricula}
+                  </td>
+                  <td className="px-4 py-3 font-medium text-slate-800 sticky left-[120px] z-10 bg-white group-hover:bg-blue-50/50 border-r border-slate-100 shadow-[2px_0_5px_-2px_rgba(0,0,0,0.05)]">
+                    {s.nombre}
+                  </td>
+                  {ponderaciones.map((p: any) => (
+                    p.actividades.map((act: any) => {
+                      const score = s.calificaciones[act.id];
+                      const hasScore = score !== undefined && score !== null;
+                      return (
+                        <td key={`score-${s.id}-${act.id}`} className="px-4 py-3 border-l border-slate-100 text-center">
+                          {hasScore ? (
+                            <span className={`font-bold ${score < 60 ? 'text-red-600' : 'text-slate-700'}`}>
+                              {score}%
+                            </span>
+                          ) : (
+                            <span className="text-slate-300 font-bold">-</span>
+                          )}
+                        </td>
+                      );
+                    })
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
 // ─── SubjectDetail ────────────────────────────────────────────────────────────
 
 function SubjectDetail({
@@ -330,7 +454,7 @@ function SubjectDetail({
   onScanClick: () => void;
   refreshKey: number;
 }) {
-  const [activeTab, setActiveTab] = useState<'asistencia' | 'alumnos' | 'evaluacion'>('asistencia');
+  const [activeTab, setActiveTab] = useState<'asistencia' | 'alumnos' | 'evaluacion' | 'desglose'>('asistencia');
 
   return (
     <div className="space-y-6">
@@ -378,7 +502,7 @@ function SubjectDetail({
 
       {/* Tabs */}
       <div className="flex flex-wrap gap-2 bg-white p-1.5 rounded-xl shadow-sm border border-blue-100 w-fit">
-        {(['asistencia', 'alumnos', 'evaluacion'] as const).map((tab) => (
+        {(['asistencia', 'alumnos', 'evaluacion', 'desglose'] as const).map((tab) => (
           <button
             key={tab}
             onClick={() => setActiveTab(tab)}
@@ -386,7 +510,7 @@ function SubjectDetail({
               activeTab === tab ? 'bg-blue-600 text-white shadow-md' : 'text-slate-600 hover:text-blue-700 hover:bg-blue-50'
             }`}
           >
-            {tab === 'asistencia' ? 'Asistencia' : tab === 'alumnos' ? 'Gestión de Alumnos' : 'Evaluación y Ponderaciones'}
+            {tab === 'asistencia' ? 'Asistencia' : tab === 'alumnos' ? 'Gestión de Alumnos' : tab === 'evaluacion' ? 'Evaluación y Ponderaciones' : 'Desglose de Actividades'}
           </button>
         ))}
       </div>
@@ -408,11 +532,15 @@ function SubjectDetail({
             <EvaluationTab subject={subject} />
           </motion.div>
         )}
+        {activeTab === 'desglose' && (
+          <motion.div key="desglose" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}>
+            <DesgloseTab subject={subject} />
+          </motion.div>
+        )}
       </AnimatePresence>
     </div>
   );
 }
-
 // ─── AttendanceTab ────────────────────────────────────────────────────────────
 
 function AttendanceTab({ subject, onScanClick, refreshKey }: { subject: Subject; onScanClick: () => void; refreshKey: number }) {
@@ -914,8 +1042,6 @@ function StudentsTab({ subject }: { subject: Subject }) {
 }
 
 // ─── EvaluationTab ────────────────────────────────────────────────────────────
-
-// ─── EvaluationTab (REPARADO) ────────────────────────────────────────────────
 function EvaluationTab({ subject }: { subject: Subject }) {
   const [ponderaciones, setPonderaciones] = useState<Ponderacion[]>([]);
   const [isAddingPond, setIsAddingPond] = useState(false);
@@ -1212,6 +1338,7 @@ const handleGradesPreview = async () => {
       setDeletingPondId(null);
     }
   };
+
 
   return (
     <>

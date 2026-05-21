@@ -27,6 +27,34 @@ export default function StudentDashboard({ user }: StudentDashboardProps) {
   const [message, setMessage] = useState<FeedbackMsg>({ text: '', type: '' });
   const [loading, setLoading] = useState(true);
 
+  const [actividadesDesglose, setActividadesDesglose] = useState<any[]>([]);
+  const [loadingActividades, setLoadingActividades] = useState(false);
+
+  const fetchActividadesDetalle = useCallback(async (subjectId: number) => {
+    setLoadingActividades(true);
+    try {
+      const res = await fetch(`/api/student/${user.id}/subject/${subjectId}/calificaciones-detalle`, {
+        headers: authedHeaders(),
+      });
+      const data = await res.json();
+      if (data.success) {
+        setActividadesDesglose(data.desglose);
+      }
+    } catch (err) {
+      console.error('Error al cargar actividades:', err);
+    } finally {
+      setLoadingActividades(false);
+    }
+  }, [user.id]);
+
+  useEffect(() => {
+    if (selectedSubject) {
+      fetchActividadesDetalle(selectedSubject.id);
+    } else {
+      setActividadesDesglose([]);
+    }
+  }, [selectedSubject, fetchActividadesDetalle]);
+
   const authedHeaders = () => ({
     'Content-Type': 'application/json',
     Authorization: `Bearer ${localStorage.getItem('token')}`,
@@ -131,7 +159,12 @@ export default function StudentDashboard({ user }: StudentDashboardProps) {
             animate={{ opacity: 1, x: 0 }}
             exit={{ opacity: 0, x: -20 }}
           >
-            <SubjectDetailStudent subject={selectedSubject} onBack={() => setSelectedSubject(null)} />
+            <SubjectDetailStudent 
+              subject={selectedSubject} 
+              onBack={() => setSelectedSubject(null)} 
+              actividadesDesglose={actividadesDesglose}
+              loadingActividades={loadingActividades}
+            />
           </motion.div>
         ) : (
           <motion.div
@@ -271,7 +304,17 @@ export default function StudentDashboard({ user }: StudentDashboardProps) {
 
 // ─── SubjectDetailStudent ─────────────────────────────────────────────────────
 
-function SubjectDetailStudent({ subject, onBack }: { subject: any; onBack: () => void }) {
+function SubjectDetailStudent({ 
+  subject, 
+  onBack, 
+  actividadesDesglose, 
+  loadingActividades 
+}: { 
+  subject: any; 
+  onBack: () => void;
+  actividadesDesglose: any[];
+  loadingActividades: boolean;
+}) {
   const evaluaciones: any[] = subject.evaluaciones ?? [];
   const promedioActual = evaluaciones.reduce((acc: number, curr: any) => {
     const puntaje = Number(curr.porcentajeObtenido ?? 0);
@@ -368,51 +411,56 @@ function SubjectDetailStudent({ subject, onBack }: { subject: any; onBack: () =>
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-        {/* Evaluaciones */}
+        {/* Evaluaciones con Desglose de Actividades */}
         <div className="md:col-span-2 space-y-4">
           <h3 className="text-xl font-bold text-slate-800 flex items-center gap-2">
-            <Percent className="w-5 h-5 text-blue-500" /> Desglose de Ponderaciones
+            <Percent className="w-5 h-5 text-blue-500" /> Desglose de Ponderaciones y Actividades
           </h3>
 
-          {!hasEvaluaciones ? (
+          {loadingActividades ? (
+            <div className="bg-white p-8 rounded-2xl border border-slate-100 flex items-center justify-center gap-2 text-slate-400 text-sm shadow-sm">
+              <Loader2 className="w-5 h-5 animate-spin text-blue-500" />
+              Cargando desglose de actividades...
+            </div>
+          ) : actividadesDesglose.length === 0 ? (
             <div className="bg-white p-8 rounded-2xl border border-dashed border-slate-200 text-center text-slate-400">
-              El profesor aún no ha asignado ponderaciones para esta materia.
+              El profesor aún no ha asignado ponderaciones ni actividades para esta materia.
             </div>
           ) : (
             <div className="grid grid-cols-1 gap-4">
-              {evaluaciones.map((evaluacion: any) => {
-                const ratio = Math.min(100, Math.max(0, (evaluacion.porcentajeObtenido / 10) * 100));
-                const graded = evaluacion.porcentajeObtenido > 0;
+              {actividadesDesglose.map((pond) => (
+                <div key={pond.id} className="bg-white p-6 rounded-2xl border border-slate-100 shadow-sm">
+                  {/* Fila de la Ponderación Principal */}
+                  <div className="flex justify-between items-center mb-4 border-b border-slate-50 pb-3">
+                    <h4 className="font-bold text-slate-700">{pond.nombre}</h4>
+                    <span className="text-xs font-black text-blue-500 bg-blue-50 px-3 py-1 rounded-full uppercase">
+                      Valor: {pond.porcentaje}%
+                    </span>
+                  </div>
 
-                return (
-                  <div key={evaluacion.id} className="bg-white p-6 rounded-2xl border border-slate-100 shadow-sm">
-                    <div className="flex justify-between items-center mb-4">
-                      <h4 className="font-bold text-slate-700">{evaluacion.nombre}</h4>
-                      <span className="text-xs font-black text-blue-500 bg-blue-50 px-3 py-1 rounded-full uppercase">
-                        Valor: {evaluacion.porcentajeTotal}%
-                      </span>
-                    </div>
-                    {graded ? (
-                      <div className="flex items-center gap-6">
-                        <div className="flex-grow bg-slate-50 rounded-full h-2.5 overflow-hidden border border-slate-100">
-                          <motion.div
-                            initial={{ width: 0 }}
-                            animate={{ width: `${ratio}%` }}
-                            transition={{ duration: 0.8, ease: 'easeOut' }}
-                            className="bg-blue-500 h-full rounded-full shadow-[0_0_8px_rgba(59,130,246,0.5)]"
-                          />
-                        </div>
-                        <div className="text-right min-w-[60px]">
-                          <span className="text-lg font-bold text-slate-800">{evaluacion.porcentajeObtenido}</span>
-                          <span className="text-sm text-slate-400">/10</span>
-                        </div>
-                      </div>
+                  {/* Lista de Actividades bajo esta ponderación */}
+                  <div className="space-y-2">
+                    {pond.actividades.length === 0 ? (
+                      <p className="text-sm text-slate-400 italic">Sin actividades registradas en este criterio.</p>
                     ) : (
-                      <p className="text-sm text-slate-400 italic">Sin calificación asignada aún.</p>
+                      pond.actividades.map((act: any) => (
+                        <div key={act.id} className="flex justify-between items-center bg-slate-50 p-3 rounded-xl border border-slate-100 hover:border-blue-200 transition-colors">
+                          <span className="text-sm text-slate-600 font-medium">
+                            {act.nombre}
+                          </span>
+                          <span className={`text-sm font-bold ${
+                            act.puntaje === null ? 'text-slate-400 italic bg-slate-200/50 px-2 py-1 rounded-md' 
+                            : act.puntaje < 60 ? 'text-red-600' 
+                            : 'text-slate-800'
+                          }`}>
+                            {act.puntaje === null ? 'Pendiente' : `${Number(act.puntaje).toFixed(1)}%`}
+                          </span>
+                        </div>
+                      ))
                     )}
                   </div>
-                );
-              })}
+                </div>
+              ))}
             </div>
           )}
         </div>
