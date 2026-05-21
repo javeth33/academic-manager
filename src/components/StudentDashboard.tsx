@@ -315,21 +315,26 @@ function SubjectDetailStudent({
   actividadesDesglose: any[];
   loadingActividades: boolean;
 }) {
-  const evaluaciones: any[] = subject.evaluaciones ?? [];
-  const promedioActual = evaluaciones.reduce((acc: number, curr: any) => {
-    const puntaje = Number(curr.porcentajeObtenido ?? 0);
-    const porcentaje = Number(curr.porcentajeTotal ?? 0);
-    return acc + puntaje * (porcentaje / 100);
-  }, 0);
-  const hasEvaluaciones = evaluaciones.length > 0;
-  const hasAnyGrade = evaluaciones.some((e: any) => e.porcentajeObtenido > 0);
-  const actividadesCalificadas = evaluaciones.filter((e: any) => (e.porcentajeObtenido ?? 0) > 0).length;
-  const pctCubierto = evaluaciones
-    .filter((e: any) => (e.porcentajeObtenido ?? 0) > 0)
-    .reduce((acc: number, e: any) => acc + (e.porcentajeTotal ?? 0), 0);
-  const pctCubiertoClamped = Math.min(100, Math.max(0, pctCubierto));
-  const promedioRedondeado = Number(promedioActual.toFixed(2));
-  const promedioPct = Math.min(100, Math.max(0, promedioActual * 10));
+  // Lógica matemática para calcular el promedio ponderado exacto desde las actividades de Teams
+  let acumuladoPonderado = 0;
+  let hasAnyGrade = false;
+
+  actividadesDesglose.forEach((pond) => {
+    const calificadas = pond.actividades.filter((a: any) => a.puntaje !== null);
+    if (calificadas.length > 0) {
+      hasAnyGrade = true;
+      const sumaPuntajes = calificadas.reduce((acc: number, act: any) => acc + Number(act.puntaje), 0);
+      const promedioDePonderacion = sumaPuntajes / calificadas.length;
+      
+      // Sumamos al acumulado global (escala 0-100)
+      acumuladoPonderado += promedioDePonderacion * (Number(pond.porcentaje) / 100);
+    }
+  });
+
+  // Convertimos de escala 100% a base 10 (ej. 87.5% pasa a ser 8.75) para el estándar académico
+  const promedioActualBase10 = acumuladoPonderado / 10;
+  const promedioRedondeado = Number(promedioActualBase10.toFixed(2));
+  const promedioPct = Math.min(100, Math.max(0, promedioActualBase10 * 10));
 
   return (
     <motion.div initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} className="space-y-6">
@@ -362,35 +367,6 @@ function SubjectDetailStudent({
             </div>
           </div>
 
-          {/* Resumen de actividad */}
-          {hasEvaluaciones && (
-            <div className="mt-6 bg-slate-50 border border-slate-100 rounded-2xl p-5">
-              <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
-                <div>
-                  <p className="text-xs font-bold text-slate-400 uppercase tracking-wider">Resumen de actividad</p>
-                  <p className="text-sm font-semibold text-slate-700 mt-1">
-                    {actividadesCalificadas}/{evaluaciones.length} actividades calificadas
-                  </p>
-                </div>
-                <div className="text-right">
-                  <p className="text-xs font-bold text-slate-400 uppercase tracking-wider">% de ponderación cubierta</p>
-                  <p className="text-sm font-black text-slate-800 mt-1">{pctCubiertoClamped}%</p>
-                </div>
-              </div>
-              <div className="mt-4 w-full bg-white rounded-full h-2.5 overflow-hidden border border-slate-200">
-                <motion.div
-                  initial={{ width: 0 }}
-                  animate={{ width: `${pctCubiertoClamped}%` }}
-                  transition={{ duration: 0.8, ease: 'easeOut' }}
-                  className="bg-blue-600 h-full rounded-full"
-                />
-              </div>
-              <p className="mt-3 text-xs text-slate-500">
-                Este porcentaje indica cuánto del 100% ya tiene calificación registrada (según las ponderaciones del profesor).
-              </p>
-            </div>
-          )}
-
           {hasAnyGrade && (
             <div className="mt-6">
               <div className="flex justify-between text-xs font-bold mb-2 uppercase tracking-tighter">
@@ -402,7 +378,7 @@ function SubjectDetailStudent({
                   initial={{ width: 0 }}
                   animate={{ width: `${promedioPct}%` }}
                   transition={{ duration: 1, ease: 'easeOut' }}
-                  className={`h-full rounded-full ${promedioActual >= 6 ? 'bg-green-500' : 'bg-blue-600'}`}
+                  className={`h-full rounded-full ${promedioRedondeado >= 6 ? 'bg-green-500' : 'bg-blue-600'}`}
                 />
               </div>
             </div>
@@ -453,7 +429,7 @@ function SubjectDetailStudent({
                             : act.puntaje < 60 ? 'text-red-600' 
                             : 'text-slate-800'
                           }`}>
-                            {act.puntaje === null ? 'Pendiente' : `${Number(act.puntaje).toFixed(1)}%`}
+                            {act.puntaje === null ? 'Pendiente' : `${Number(act.puntaje).toFixed(0)}/100`}
                           </span>
                         </div>
                       ))
@@ -475,7 +451,7 @@ function SubjectDetailStudent({
             <h4 className="text-2xl font-bold mb-4">
               {!hasAnyGrade
                 ? 'Sin datos aún'
-                : promedioActual >= 6
+                : promedioRedondeado >= 6
                 ? 'Aprobado'
                 : 'En proceso'}
             </h4>
