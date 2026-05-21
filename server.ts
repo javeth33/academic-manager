@@ -1014,7 +1014,7 @@ async function startServer() {
     }
   );
 
-  // Desglose detallado de actividades por alumno
+// Desglose detallado de actividades por alumno (CON ASISTENCIAS FILTRADAS POR DÍA REAL DE CLASE)
   app.get(
     "/api/professor/subject/:id/actividades-detalle",
     authMiddleware,
@@ -1064,7 +1064,31 @@ async function startServer() {
         
         if (calErr) throw calErr;
 
-        // 5. Estructurar la respuesta en un JSON fácil de iterar para React
+        // 5. OBTENER ASISTENCIAS Y CALCULAR SESIONES REALES DE CLASE
+        const { data: sesiones, error: sesErr } = await supabase
+          .from("sesiones_asistencia")
+          .select("id")
+          .eq("materia_id", subjectId);
+        
+        if (sesErr) throw sesErr;
+        const sesionIds = sesiones?.map(s => s.id) || [];
+
+        let registrosAsistencia: any[] = [];
+        if (sesionIds.length > 0) {
+          const { data: regs, error: regErr } = await supabase
+            .from("registros_asistencia")
+            .select("alumno_id, sesion_id, estado")
+            .in("sesion_id", sesionIds);
+          
+          if (regErr) throw regErr;
+          registrosAsistencia = regs || [];
+        }
+
+        // Lógica solicitada: Contamos como días de clase únicamente las sesiones que posean al menos un registro
+        const sesionesConRegistros = new Set(registrosAsistencia.map(r => r.sesion_id));
+        const totalSesionesValidas = sesionesConRegistros.size;
+
+        // 6. Estructurar la respuesta final
         const structuredPonderaciones = ponderaciones?.map(p => ({
           ...p,
           actividades: actividades?.filter(a => a.ponderacion_id === p.id) || []
@@ -1074,31 +1098,102 @@ async function startServer() {
           const u = i.usuarios;
           const studentGrades = calificaciones?.filter(c => c.alumno_id === u.id) || [];
           
-          // Crear un diccionario rápido de { actividad_id: puntaje }
           const calificacionesMap = studentGrades.reduce((acc, curr) => {
             acc[curr.actividad_id] = curr.puntaje;
             return acc;
           }, {} as Record<number, number>);
 
+          // Contar cuántas asistencias "presente" tiene el alumno dentro de los días válidos de pase de lista
+          const asistidas = registrosAsistencia.filter(
+            r => Number(r.alumno_id) === Number(u.id) && r.estado === 'presente' && sesionesConRegistros.has(r.sesion_id)
+          ).length;
+
           return {
             id: u.id,
             nombre: u.nombre,
             matricula: u.matricula,
-            calificaciones: calificacionesMap
+            calificaciones: calificacionesMap,
+            asistencias: asistidas
           };
         }) || [];
 
-        // Ordenar alumnos alfabéticamente
         students.sort((a, b) => a.nombre.localeCompare(b.nombre));
 
         return res.json({ 
           success: true, 
           ponderaciones: structuredPonderaciones, 
-          students 
+          students,
+          totalSesiones: totalSesionesValidas
         });
       } catch (error: any) {
         console.error("[actividades-detalle] Error:", error);
         return res.status(500).json({ success: false, message: "Error interno al obtener el desglose." });
+      }
+    }
+  );
+
+
+  // Actualizar una calificación individual desde la matriz de desglose
+  app.post(
+    "/api/professor/calificaciones/update-single",
+    authMiddleware,
+    requireRole("professor", "admin"),
+    async (req, res) => {
+      try {
+        const { alumnoId, actividadId, puntaje } = req.body;
+
+        if (!alumnoId || !actividadId) {
+          return res.status(400).json({ success: false, message: "Faltan parámetros requeridos." });
+        }
+
+        const scoreValue = puntaje === '' || puntaje === null ? null : Number(puntaje);
+
+        if (scoreValue !== null && (scoreValue < 0 || scoreValue > 100)) {
+          return res.status(400).json({ success: false, message: "La calificación debe estar entre 0 y 100." });
+        }
+
+        if (scoreValue === null) {
+          // Si el profesor borra el campo, eliminamos el registro para dejarlo como "Pendiente (-)"
+          const { error } = await supabase
+            .from("calificaciones")
+            .delete()
+            .eq("actividad_id", actividadId)
+            .eq("alumno_id", alumnoId);
+
+          if (error) throw error;
+        } else {
+          // Verificamos si la calificación ya existe
+          const { data: existing } = await supabase
+            .from("calificaciones")
+            .select("id")
+            .eq("actividad_id", actividadId)
+            .eq("alumno_id", alumnoId)
+            .maybeSingle();
+
+          if (existing) {
+            // Si ya existe, actualizamos
+            const { error } = await supabase
+              .from("calificaciones")
+              .update({ puntaje: scoreValue })
+              .eq("id", existing.id);
+            if (error) throw error;
+          } else {
+            // Si no existe, insertamos un nuevo registro
+            const { error } = await supabase
+              .from("calificaciones")
+              .insert({
+                actividad_id: actividadId,
+                alumno_id: alumnoId,
+                puntaje: scoreValue
+              });
+            if (error) throw error;
+          }
+        }
+
+        return res.json({ success: true, message: "Calificación actualizada correctamente." });
+      } catch (error: any) {
+        console.error("[update-single-grade] Error:", error);
+        return res.status(500).json({ success: false, message: "Error al actualizar la calificación." });
       }
     }
   );

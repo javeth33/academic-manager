@@ -321,6 +321,7 @@ export default function ProfessorDashboard({ user }: ProfessorDashboardProps) {
 function DesgloseTab({ subject }: { subject: Subject }) {
   const [loading, setLoading] = useState(true);
   const [data, setData] = useState<any>(null);
+  const [isEditingMode, setIsEditingMode] = useState(false); // Estado para activar/desactivar la edición global
 
   const fetchDesglose = useCallback(async () => {
     setLoading(true);
@@ -343,11 +344,60 @@ function DesgloseTab({ subject }: { subject: Subject }) {
     fetchDesglose();
   }, [fetchDesglose]);
 
+  // Manejador del guardado automático por celda (al salir del input o pulsar Enter)
+  const handleCellSave = async (alumnoId: number, actividadId: number, rawValue: string, currentScore: any) => {
+    const newValue = rawValue.trim() === '' ? null : Number(rawValue);
+    const oldValue = currentScore !== undefined && currentScore !== null ? Number(currentScore) : null;
+
+    if (newValue === oldValue) return; // Si no cambió el valor, no hacemos petición
+
+    if (newValue !== null && (newValue < 0 || newValue > 100)) {
+      alert('La calificación debe ser un número entre 0 y 100.');
+      return;
+    }
+
+    try {
+      const res = await fetch('/api/professor/calificaciones/update-single', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${localStorage.getItem('token')}`,
+        },
+        body: JSON.stringify({ alumnoId, actividadId, puntaje: rawValue.trim() === '' ? '' : newValue }),
+      });
+      const result = await res.json();
+      
+      if (result.success) {
+        // Actualizamos de forma reactiva y local el diccionario de notas del alumno modificado
+        setData((prevData: any) => {
+          const updatedStudents = prevData.students.map((student: any) => {
+            if (student.id === alumnoId) {
+              return {
+                ...student,
+                calificaciones: {
+                  ...student.calificaciones,
+                  [actividadId]: newValue
+                }
+              };
+            }
+            return student;
+          });
+          return { ...prevData, students: updatedStudents };
+        });
+      } else {
+        alert('Error al guardar: ' + result.message);
+      }
+    } catch (err) {
+      console.error('[handleCellSave] Error:', err);
+      alert('Error de comunicación con el servidor al guardar nota.');
+    }
+  };
+
   if (loading) {
     return (
       <div className="flex flex-col items-center justify-center py-12 bg-white rounded-2xl border border-blue-100 shadow-sm">
         <Loader2 className="w-8 h-8 animate-spin text-blue-600 mb-4" />
-        <p className="text-slate-500 font-medium">Cargando matriz de calificaciones...</p>
+        <p className="text-slate-500 font-medium">Cargando matriz de calificaciones y asistencias...</p>
       </div>
     );
   }
@@ -360,31 +410,56 @@ function DesgloseTab({ subject }: { subject: Subject }) {
     );
   }
 
-  const { ponderaciones, students } = data;
+  const { ponderaciones, students, totalSesiones } = data;
   const hasActivities = ponderaciones.some((p: any) => p.actividades && p.actividades.length > 0);
 
   return (
     <div className="bg-white rounded-2xl shadow-sm border border-blue-100 overflow-hidden flex flex-col">
-      <div className="p-6 border-b border-blue-50">
-        <h3 className="font-bold text-slate-800 flex items-center gap-2">
-          <CheckSquare className="w-5 h-5 text-blue-600" /> Matriz de Calificaciones
-        </h3>
-        <p className="text-sm text-slate-500 mt-1">
-          Visualiza las calificaciones exactas de cada alumno por actividad.
-        </p>
+      <div className="p-6 border-b border-blue-50 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+        <div>
+          <h3 className="font-bold text-slate-800 flex items-center gap-2">
+            <CheckSquare className="w-5 h-5 text-blue-600" /> Matriz de Calificaciones y Asistencia
+          </h3>
+          <p className="text-sm text-slate-500 mt-1">
+            Visualiza las calificaciones en puntaje base 100 y el récord exacto de días de pase de lista.
+          </p>
+        </div>
+        {hasActivities && (
+          <button
+            onClick={() => setIsEditingMode(!isEditingMode)}
+            className={`px-4 py-2 rounded-xl text-sm font-semibold transition-all shadow-sm flex items-center gap-1.5 border ${
+              isEditingMode 
+                ? 'bg-green-600 hover:bg-green-700 text-white border-green-600' 
+                : 'bg-white hover:bg-slate-50 text-slate-700 border-slate-200'
+            }`}
+          >
+            {isEditingMode ? (
+              <>
+                <CheckCircle className="w-4 h-4" /> Vista de Lectura
+              </>
+            ) : (
+              <>
+                <Pencil className="w-4 h-4" /> Editar Calificaciones
+              </>
+            )}
+          </button>
+        )}
       </div>
 
-      {!hasActivities ? (
+      {!hasActivities && totalSesiones === 0 ? (
         <div className="p-8 text-center text-slate-400 font-medium">
-          No has importado ninguna actividad todavía.
+          No hay registros de asistencia ni actividades importadas para mostrar.
         </div>
       ) : (
         <div className="overflow-x-auto relative">
           <table className="w-full text-left text-sm whitespace-nowrap">
             <thead className="bg-slate-50 text-slate-600 text-xs tracking-wider">
-              {/* Primera fila: Nombres de Ponderaciones */}
+              {/* Primera fila: Cabeceras de Sección */}
               <tr>
                 <th className="px-4 py-3 border-b border-slate-200 sticky left-0 z-20 bg-slate-50" colSpan={2}></th>
+                <th className="px-4 py-2 border-b border-l border-slate-200 text-center font-bold bg-emerald-50 text-emerald-800">
+                  Asistencia
+                </th>
                 {ponderaciones.map((p: any) => (
                   p.actividades.length > 0 ? (
                     <th key={`pond-${p.id}`} colSpan={p.actividades.length} className="px-4 py-2 border-b border-l border-slate-200 text-center font-bold bg-blue-50/80 text-blue-800">
@@ -393,10 +468,13 @@ function DesgloseTab({ subject }: { subject: Subject }) {
                   ) : null
                 ))}
               </tr>
-              {/* Segunda fila: Nombres de Actividades */}
+              {/* Segunda fila: Columnas e Items de Actividades */}
               <tr>
                 <th className="px-4 py-3 border-b border-slate-200 font-bold sticky left-0 z-20 bg-slate-50 min-w-[120px]">Matrícula</th>
                 <th className="px-4 py-3 border-b border-slate-200 font-bold sticky left-[120px] z-20 bg-slate-50 min-w-[250px]">Nombre del Alumno</th>
+                <th className="px-4 py-3 border-b border-l border-slate-200 font-bold text-emerald-600 text-center min-w-[130px]">
+                  Clases ({totalSesiones})
+                </th>
                 {ponderaciones.map((p: any) => (
                   p.actividades.map((act: any) => (
                     <th key={`act-${act.id}`} className="px-4 py-3 border-b border-l border-slate-200 font-medium text-slate-500 text-center min-w-[150px]">
@@ -415,18 +493,41 @@ function DesgloseTab({ subject }: { subject: Subject }) {
                   <td className="px-4 py-3 font-medium text-slate-800 sticky left-[120px] z-10 bg-white group-hover:bg-blue-50/50 border-r border-slate-100 shadow-[2px_0_5px_-2px_rgba(0,0,0,0.05)]">
                     {s.nombre}
                   </td>
+                  
+                  {/* Celda de Asistencia */}
+                  <td className="px-4 py-3 border-l border-slate-100 text-center font-bold text-emerald-700 bg-emerald-50/20">
+                    {s.asistencias} / {totalSesiones}
+                  </td>
+
+                  {/* Celdas de Calificaciones Dinámicas (Lectura o Entrada de Datos) */}
                   {ponderaciones.map((p: any) => (
                     p.actividades.map((act: any) => {
                       const score = s.calificaciones[act.id];
                       const hasScore = score !== undefined && score !== null;
+                      
                       return (
-                        <td key={`score-${s.id}-${act.id}`} className="px-4 py-3 border-l border-slate-100 text-center">
-                          {hasScore ? (
-                            <span className={`font-bold ${score < 60 ? 'text-red-600' : 'text-slate-700'}`}>
-                              {score}%
-                            </span>
+                        <td key={`score-${s.id}-${act.id}`} className="px-4 py-2 border-l border-slate-100 text-center min-w-[150px]">
+                          {isEditingMode ? (
+                            <input
+                              type="number"
+                              min="0"
+                              max="100"
+                              placeholder="-"
+                              defaultValue={hasScore ? Number(score).toFixed(0) : ''}
+                              onBlur={(e) => handleCellSave(s.id, act.id, e.target.value, score)}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
+                              }}
+                              className="w-16 text-center text-sm font-bold border border-slate-200 bg-slate-50/50 focus:bg-white focus:border-blue-500 focus:ring-2 focus:ring-blue-100 rounded-lg p-1 transition-all outline-none"
+                            />
                           ) : (
-                            <span className="text-slate-300 font-bold">-</span>
+                            hasScore ? (
+                              <span className={`font-bold ${score < 60 ? 'text-red-600' : 'text-slate-700'}`}>
+                                {Number(score).toFixed(0)}/100
+                              </span>
+                            ) : (
+                              <span className="text-slate-300 font-bold">-</span>
+                            )
                           )}
                         </td>
                       );
