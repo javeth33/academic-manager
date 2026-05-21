@@ -1152,6 +1152,9 @@ function EvaluationTab({ subject }: { subject: Subject }) {
   const [pondLoading, setPondLoading] = useState(false);
   const [deletingPondId, setDeletingPondId] = useState<number | null>(null);
   const [pondError, setPondError] = useState('');
+  const [creationMode, setCreationMode] = useState<'excel' | 'manual'>('excel');
+  const [manualAct, setManualAct] = useState({ nombre: '', fecha: '' });
+  const [manualLoading, setManualLoading] = useState(false);
 
   const totalPct = ponderaciones.reduce((a, c) => a + c.porcentaje, 0);
 
@@ -1317,6 +1320,35 @@ const handleGradesPreview = async () => {
       setGradesMessage({ text: 'Error de conexión al importar calificaciones.', type: 'error' });
     } finally {
       setGradesLoading(false);
+    }
+  };
+
+  const handleCreateManualActivity = async () => {
+    if (!selectedPonderacionId || !manualAct.nombre.trim()) return;
+    setManualLoading(true);
+    setGradesMessage({ text: '', type: '' });
+    try {
+      const res = await fetch(`/api/professor/subject/${subject.id}/actividades/manual`, {
+        method: 'POST',
+        headers: authedHeaders(),
+        body: JSON.stringify({ 
+          ponderacionId: selectedPonderacionId,
+          nombre: manualAct.nombre,
+          fechaVencimiento: manualAct.fecha || null
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        setGradesMessage({ text: data?.message || 'No se pudo crear la actividad.', type: 'error' });
+        return;
+      }
+      setGradesMessage({ text: `Actividad "${data.actividad.nombre}" creada. Ve a la pestaña "Desglose de Actividades" para ingresar las calificaciones manualmente.`, type: 'success' });
+      setManualAct({ nombre: '', fecha: '' });
+      setSelectedPonderacionId('');
+    } catch {
+      setGradesMessage({ text: 'Error de conexión al crear actividad.', type: 'error' });
+    } finally {
+      setManualLoading(false);
     }
   };
 
@@ -1580,12 +1612,24 @@ const handleGradesPreview = async () => {
 
           {activeEvalTab === 'import' ? (
             <div className="space-y-4">
-              <p className="text-sm text-slate-500">
-                Selecciona la ponderación y sube el archivo descargado de Teams.
-              </p>
+              {/* Toggle de Modo de Captura */}
+              <div className="flex bg-slate-100 p-1 rounded-xl w-fit">
+                <button
+                  onClick={() => { setCreationMode('excel'); setGradesMessage({text:'', type:''}); }}
+                  className={`px-4 py-2 text-sm font-semibold rounded-lg transition-all ${creationMode === 'excel' ? 'bg-white text-blue-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+                >
+                  Subir Excel (Teams)
+                </button>
+                <button
+                  onClick={() => { setCreationMode('manual'); setGradesMessage({text:'', type:''}); }}
+                  className={`px-4 py-2 text-sm font-semibold rounded-lg transition-all ${creationMode === 'manual' ? 'bg-white text-blue-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+                >
+                  Captura Manual
+                </button>
+              </div>
 
-              <div className="space-y-4 bg-slate-50 p-6 rounded-2xl border border-slate-200">
-                {/* 1. SELECCIÓN DE PONDERACIÓN AFECTADA */}
+              <div className="space-y-4 bg-slate-50 p-6 rounded-2xl border border-slate-200 transition-all">
+                {/* 1. SELECCIÓN DE PONDERACIÓN (Común para ambos) */}
                 <div>
                   <label className="block text-sm font-semibold text-slate-700 mb-2">1. Seleccionar Ponderación a afectar</label>
                   <select
@@ -1600,51 +1644,78 @@ const handleGradesPreview = async () => {
                   </select>
                 </div>
 
-                {/* 2. CARGA DEL ARCHIVO */}
-                <div>
-                  <label className="block text-sm font-semibold text-slate-700 mb-2">2. Subir exportación de Teams (.csv, .xlsx)</label>
-                  <div className="border-2 border-dashed border-blue-200 rounded-2xl p-6 bg-blue-50/50">
-                    <input
-                      type="file"
-                      accept=".csv,.xlsx"
-                      onChange={(e) => { 
-                        setGradesFile(e.target.files?.[0] || null); 
-                        setGradesPreview([]); 
-                        setActividadMeta(null);
-                        setGradesMessage({ text: '', type: '' }); 
-                      }}
-                      disabled={!selectedPonderacionId}
-                      className="block w-full text-sm text-slate-500 file:mr-4 file:py-2.5 file:px-6 file:rounded-xl file:border-0 file:text-sm file:font-bold file:bg-blue-100 file:text-blue-700 hover:file:bg-blue-200 transition-colors cursor-pointer disabled:opacity-50"
-                    />
-                  </div>
-                </div>
-              </div>
+                {/* VISTA EXCEL */}
+                {creationMode === 'excel' && (
+                  <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
+                    <label className="block text-sm font-semibold text-slate-700 mb-2">2. Subir exportación de Teams (.csv, .xlsx)</label>
+                    <div className="border-2 border-dashed border-blue-200 rounded-2xl p-6 bg-blue-50/50 mb-4">
+                      <input
+                        type="file"
+                        accept=".csv,.xlsx"
+                        onChange={(e) => { 
+                          setGradesFile(e.target.files?.[0] || null); 
+                          setGradesPreview([]); 
+                          setActividadMeta(null);
+                          setGradesMessage({ text: '', type: '' }); 
+                        }}
+                        disabled={!selectedPonderacionId}
+                        className="block w-full text-sm text-slate-500 file:mr-4 file:py-2.5 file:px-6 file:rounded-xl file:border-0 file:text-sm file:font-bold file:bg-blue-100 file:text-blue-700 hover:file:bg-blue-200 transition-colors cursor-pointer disabled:opacity-50"
+                      />
+                    </div>
+                    <div className="flex gap-3">
+                      <button onClick={handleGradesPreview} disabled={!gradesFile || !selectedPonderacionId} className="flex-1 bg-slate-800 hover:bg-slate-900 text-white py-2.5 rounded-xl font-medium disabled:opacity-50">
+                        Previsualizar
+                      </button>
+                      <button onClick={handleImportGrades} disabled={gradesLoading || gradesPreview.length === 0} className="flex-1 bg-green-600 hover:bg-green-700 text-white py-2.5 rounded-xl font-medium disabled:opacity-50 flex items-center justify-center gap-2">
+                        {gradesLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : null} Confirmar e Importar
+                      </button>
+                    </div>
+                  </motion.div>
+                )}
 
-              <div className="flex gap-3">
-                <button
-                  onClick={handleGradesPreview}
-                  disabled={!gradesFile || !selectedPonderacionId}
-                  className="flex-1 bg-slate-800 hover:bg-slate-900 text-white py-2.5 rounded-xl font-medium disabled:opacity-50"
-                >
-                  Previsualizar
-                </button>
-                <button
-                  onClick={handleImportGrades}
-                  disabled={gradesLoading || gradesPreview.length === 0}
-                  className="flex-1 bg-green-600 hover:bg-green-700 text-white py-2.5 rounded-xl font-medium disabled:opacity-50 flex items-center justify-center gap-2"
-                >
-                  {gradesLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
-                  Confirmar e Importar
-                </button>
+                {/* VISTA MANUAL */}
+                {creationMode === 'manual' && (
+                  <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-4">
+                    <div>
+                      <label className="block text-sm font-semibold text-slate-700 mb-2">2. Nombre de la Actividad</label>
+                      <input 
+                        type="text" 
+                        placeholder="Ej. Examen Parcial 1" 
+                        value={manualAct.nombre}
+                        onChange={(e) => setManualAct({...manualAct, nombre: e.target.value})}
+                        disabled={!selectedPonderacionId}
+                        className="w-full bg-white border border-slate-300 rounded-xl px-4 py-3 text-sm focus:border-blue-500 focus:ring-2 focus:ring-blue-100 outline-none disabled:opacity-50"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-semibold text-slate-700 mb-2">3. Fecha de Vencimiento (Opcional)</label>
+                      <input 
+                        type="date" 
+                        value={manualAct.fecha}
+                        onChange={(e) => setManualAct({...manualAct, fecha: e.target.value})}
+                        disabled={!selectedPonderacionId}
+                        className="w-full bg-white border border-slate-300 rounded-xl px-4 py-3 text-sm focus:border-blue-500 focus:ring-2 focus:ring-blue-100 outline-none disabled:opacity-50"
+                      />
+                    </div>
+                    <button 
+                      onClick={handleCreateManualActivity} 
+                      disabled={manualLoading || !selectedPonderacionId || !manualAct.nombre.trim()} 
+                      className="w-full bg-blue-600 hover:bg-blue-700 text-white py-3 rounded-xl font-medium disabled:opacity-50 flex items-center justify-center gap-2 mt-2 shadow-sm"
+                    >
+                      {manualLoading ? <Loader2 className="w-5 h-5 animate-spin" /> : <Plus className="w-5 h-5" />} 
+                      Crear Actividad Vacía
+                    </button>
+                  </motion.div>
+                )}
               </div>
 
               {gradesMessage.text && (
-                <div className={`p-3 rounded-xl text-sm border ${gradesMessage.type === 'success' ? 'bg-green-50 text-green-700 border-green-200' : 'bg-red-50 text-red-700 border-red-200'}`}>
+                <div className={`p-4 rounded-xl text-sm border font-medium ${gradesMessage.type === 'success' ? 'bg-green-50 text-green-700 border-green-200' : 'bg-red-50 text-red-700 border-red-200'}`}>
                   {gradesMessage.text}
                 </div>
               )}
 
-              {gradesPreview.length > 0 && actividadMeta && (
+              {gradesPreview.length > 0 && actividadMeta && creationMode === 'excel' && (
                 <div className="border border-slate-200 rounded-xl overflow-hidden mt-4">
                   <div className="bg-blue-50 px-4 py-3 border-b border-blue-100 flex justify-between items-center">
                     <div>

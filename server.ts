@@ -795,7 +795,6 @@ async function startServer() {
   });
 
 // Importar calificaciones por actividad (Excel de Teams)
-// Importar calificaciones por actividad (Excel de Teams) con Validación Estricta
   app.post(
     "/api/professor/subject/:id/calificaciones/import",
     authMiddleware,
@@ -920,7 +919,50 @@ async function startServer() {
       }
     }
   );
+// Crear una actividad vacía manualmente (para calificar en el desglose)
+  app.post(
+    "/api/professor/subject/:id/actividades/manual",
+    authMiddleware,
+    requireRole("professor", "admin"),
+    async (req, res) => {
+      try {
+        const subjectId = Number(req.params.id);
+        const { ponderacionId, nombre, fechaVencimiento } = req.body;
 
+        if (!subjectId || !ponderacionId || !nombre) {
+          return res.status(400).json({ success: false, message: "Faltan datos de la ponderación o nombre." });
+        }
+
+        // Validar que la ponderación pertenece a la materia
+        const { data: pondCheck } = await supabase
+          .from("ponderaciones")
+          .select("id")
+          .eq("id", ponderacionId)
+          .eq("materia_id", subjectId)
+          .maybeSingle();
+
+        if (!pondCheck) {
+          return res.status(403).json({ success: false, message: "La ponderación no pertenece a esta clase." });
+        }
+
+        const { data: actividad, error: actErr } = await supabase
+          .from("actividades")
+          .insert([{
+            ponderacion_id: ponderacionId,
+            nombre: nombre.trim(),
+            fecha_vencimiento: fechaVencimiento || null
+          }])
+          .select()
+          .single();
+
+        if (actErr) return res.status(500).json({ success: false, message: "Error al crear la actividad: " + actErr.message });
+
+        return res.json({ success: true, actividad });
+      } catch (e: any) {
+        return res.status(500).json({ success: false, message: `Error interno: ${e.message}` });
+      }
+    }
+  );
   // Concentrado de calificaciones por materia (Cálculo actualizado)
   app.get(
     "/api/professor/subject/:id/concentrado",
